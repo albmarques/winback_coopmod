@@ -262,6 +262,28 @@ Esta seção documenta o mapeamento completo de engenharia reversa do pipeline g
   - Em `func_800C4EE0`, se o P1 estiver interno (`out0 < 0`) e o P2 externo (`out1 >= 0`), `obj + 0x20` aponta temporariamente para o slot de objeto do P2 (`U32(p1 + 0x1740)`) com `S16(p1 + 0x8E) = out1`.
   - Em `func_800C4FB0`, para o viewport atual `vp = U8(0x8016A40F) ? 1 : 0`, `obj + 0x20` e `PLAYER_PTRS[0]` apontam temporariamente para `p_vp = U32(PLAYER_PTRS + vp * 4)`, e `S16(p_vp + 0x8E)` recebe `out_room` (quando `>= 0`, garantindo nuvens + Sky Dome mesmo olhando para fora através de uma porta aberta) ou `room` (quando `< 0`, fazendo o `bne` em `0x800C5008` pular limpa e nativamente o desenho naquele viewport interno).
 
+### 3.16 `func_800CF6A8` — HUD Customizada com Retrato 3D e Barra de Vida Inclinada
+- **Endereço na ROM:** `0x800CF6A8` (`size = 0xC4`).
+- **Tipo de interceptação:** `RECOMP_PATCH` (`func_800CF6A8(int player_idx, int x, int y)`).
+- **Engenharia Reversa do Sistema de Sprites 2D (`func_8007A470` / `func_8007A754` / `func_8007B8F4`):**
+  - No início do desenho da HUD (`func_800B5420`), `func_8007A394(0x801D2C80)` emite `gSPDisplayList(0x8010AF58)`, configurando o RDP em `G_CYC_1CYCLE`, `G_TP_NONE`, `G_AC_THRESHOLD` e combiner `G_CC_MODULATEIA_PRIM` (`FC119623 FF2FFFFF`).
+  - `func_8007B8F4(dl_ptr_ptr, sprite_ptr, x, y)` grava `(x, y)` em `sprite_ptr + 0x14` / `+0x16` (`func_8007B8E8`) e chama o renderizador universal de sprites `func_8007A754(dl_ptr_ptr, sprite_ptr)`.
+  - Layout da estrutura de sprite de 40 bytes (`0x28` bytes):
+    - `+0x00` (`u8 fmt`): `0` = `G_IM_FMT_RGBA`, `2` = `G_IM_FMT_CI`, `3` = `G_IM_FMT_IA`, `4` = `G_IM_FMT_I`.
+    - `+0x01` (`u8 siz`): `0` = `4b`, `1` = `8b`, `2` = `16b` (`G_IM_SIZ_16b`).
+    - `+0x02` (`u16 width`), `+0x04` (`u16 height`), `+0x06` (`u16 pad`).
+    - `+0x08` (`u32 tex_ptr`): Ponteiro KSEG0 no Segmento 0 (`0x80000000..0x807FFFFF`). Importante: o RT64 resolve `G_SETTIMG` como `segments[(addr >> 24) & 0xF] + (addr & 0xFFFFFF)` dentro dos 8 MB de RDRAM, portanto texturas dinâmicas do mod (cujo `.rodata` linka em `0x81000000`) devem ser copiadas para a faixa de Expansion Pak `< 8MB` (`0x80500000`).
+    - `+0x0C` (`u32 tlut_ptr`): `0` para `RGBA16`.
+    - `+0x10` (`u16 flags`): bit `0x0001` = ativo/visível; bit `0x0020` = `G_TF_POINT` (quando `0`, usa `G_TF_BILERP`); bit `0x2000` = pula `func_8007A470` (deve ser limpo antes de cada chamada para que `func_8007A470` configure `G_SETPRIMCOLOR` e `G_SETOTHERMODE_L = 0x0F0A7008`).
+    - `+0x14` (`s16 x`), `+0x16` (`s16 y`).
+    - `+0x18` (`f32 scale_x`), `+0x1C` (`f32 scale_y`): Em `0.5f` (`0x3F000000`), cada bloco de `32x32` texels fatiado por `func_8007A754` mapeia para `16x16` pixels exatos na tela `320x240` com `dsdx = dtdy = 2048` (2 texels por pixel N64, renderizados em resolução total pelo RT64).
+    - `+0x20..0x23` (`u8 r, g, b, a`): `255, 255, 255, 255`.
+- **Engenharia Reversa do Descompressor LZSS da ROM (`func_8005230C` $\rightarrow$ `func_80071FE0`):**
+  - `func_8005230C(rom_offset, dst_ram)` faz DMA de blocos de `0x400` bytes da ROM e chama `func_80071FE0` (`0x80071FE0..0x800720BC`).
+  - `func_80071FE0` lê um bitstream MSB-first (`mask = 0x80 >> bit`):
+    - Bit de controle `1`: lê 8 bits literais e grava no destino e no ring buffer de `0x4000` bytes (`0x8021FA00`, cursor inicial `r = 1`);
+    - Bit de controle `0`: lê 14 bits de posição no ring buffer (`0` = fim do stream) e 4 bits de comprimento (`count = len4 + 3`, pois `0x80072064: addiu $s2, $v0, 2` e o loop copia de `0` até `$s2` inclusive via `slt $v0, $s2, $s1`).
+
 ---
 
 ## 4. Funções da ROM Chamadas Diretamente pelo `coop.c`
@@ -274,6 +296,7 @@ Esta seção documenta o mapeamento completo de engenharia reversa do pipeline g
 | `func_8006B374` | `void func_8006B374(unsigned int player)` | Libera slot de juntas dinâmicas em `D_801DC710`. |
 | `func_8006B3B8` | `void func_8006B3B8(unsigned int player)` | Faz DMA das juntas dinâmicas do modelo atual (`0x3A`) para `D_801DC710`. |
 | `func_8006B564` | `void func_8006B564(unsigned int player)` | Calcula a deformação inicial das juntas dinâmicas. |
+| `func_8007B8F4` | `void func_8007B8F4(unsigned int dl_ptr_ptr, unsigned int sprite_ptr, int x, int y)` | Desenha o sprite `RGBA16` (`224x48`, escala `0.5f`) da HUD customizada na Display List principal (`0x801D2C80`). |
 
 ---
 
@@ -314,6 +337,7 @@ Lista completa dos símbolos em [winback.us.syms.toml](file:///C:/Users/Alberto/
 | `func_8006B564` | `0x8006B564` | `0x1128` | Skinning CPU das juntas dinâmicas |
 | `func_8006C68C` | `0x8006C68C` | `0x2904` | Montagem de DLs dinâmicas (LOD 1) |
 | `func_8006EF90` | `0x8006EF90` | `0x24E0` | Montagem de DLs dinâmicas (LOD 2/3) |
+| `func_8007B8F4` | `0x8007B8F4` | `0x48` | Desenho de sprite 2D posicionado em `(x, y)` |
 | `func_800873A4` | `0x800873A4` | `0x1CC` | Checagem de pickup de item da fase |
 | `func_800937C4` | `0x800937C4` | `0x290` | Auxiliar de eventos/fase |
 | `func_800944E0` | `0x800944E0` | `0x248` | Gerenciador de eventos e popups |
@@ -331,4 +355,5 @@ Lista completa dos símbolos em [winback.us.syms.toml](file:///C:/Users/Alberto/
 | `func_800C4EE0` | `0x800C4EE0` | `0xD0` | Update do objeto de Céu / Nuvens (matriz do Sky Dome) |
 | `func_800C4FB0` | `0x800C4FB0` | `0x30C` | Draw do objeto de Céu / Nuvens (nuvens 2D + Sky Dome 3D) |
 | `func_800C958C` | `0x800C958C` | `0x68` | Checagem de pickup de item solto |
+| `func_800CF6A8` | `0x800CF6A8` | `0xC4` | Desenho da barra de vida (`LIFE`) do jogador |
 | `func_800D1E24` | `0x800D1E24` | `0x2A8` | Atualização de dados da HUD |

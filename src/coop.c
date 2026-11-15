@@ -1026,3 +1026,147 @@ RECOMP_HOOK_RETURN("func_80098F20") void coop_cutscene_teleport_end(void) {
         U16(dst + 0x8E) = U16(src + 0x8E);
     }
 }
+
+// 11. Custom HUD with character portraits (Jean-Luc for P1, Engineer for P2) and slanted LIFE bar.
+#include "hud_tex_data.h"
+
+#define HUD_SPRITE_P1 0x80500000u
+#define HUD_SPRITE_P2 0x80500040u
+#define HUD_TEX_P1    0x80500100u
+#define HUD_TEX_P2    0x80506000u
+#define HUD_TEX_W     224
+#define HUD_TEX_H     48
+
+#define RGBA5551(r, g, b) \
+    ((unsigned short)(((((r) >> 3) & 0x1F) << 11) | ((((g) >> 3) & 0x1F) << 6) | ((((b) >> 3) & 0x1F) << 1) | 1))
+
+extern void func_8007B8F4(unsigned int dl_ptr_ptr, unsigned int sprite_ptr, int x, int y);
+
+static int hud_init_done[2] = { 0, 0 };
+static int hud_last_bar[2] = { -1, -1 };
+static int hud_last_trail[2] = { -1, -1 };
+static int hud_last_hp[2] = { -1, -1 };
+
+static const int hud_bar_x0[8] = { 91, 90, 89, 88, 88, 87, 87, 87 };
+static const int hud_bar_x1[8] = { 209, 208, 207, 206, 205, 204, 203, 202 };
+
+static void hud_ensure_loaded(int char_idx, unsigned int spr_addr, unsigned int tex_addr, const unsigned short *base_tex) {
+    if (!hud_init_done[char_idx] || U16(spr_addr + 0x02) != HUD_TEX_W) {
+        for (int i = 0; i < HUD_TEX_W * HUD_TEX_H; i++) {
+            U16(tex_addr + i * 2) = base_tex[i];
+        }
+        U8(spr_addr + 0x00) = 0;          // G_IM_FMT_RGBA
+        U8(spr_addr + 0x01) = 2;          // G_IM_SIZ_16b
+        U16(spr_addr + 0x02) = HUD_TEX_W; // width = 224
+        U16(spr_addr + 0x04) = HUD_TEX_H; // height = 48
+        U16(spr_addr + 0x06) = 0;
+        U32(spr_addr + 0x08) = tex_addr;
+        U32(spr_addr + 0x0C) = 0;         // no TLUT
+        U16(spr_addr + 0x10) = 0x0001;    // visible + auto RDP setup
+        U16(spr_addr + 0x12) = 0;
+        U16(spr_addr + 0x14) = 0;
+        U16(spr_addr + 0x16) = 0;
+        U32(spr_addr + 0x18) = 0x3F000000u; // scale_x = 0.5f (112px on 320x240 screen)
+        U32(spr_addr + 0x1C) = 0x3F000000u; // scale_y = 0.5f (24px on 320x240 screen)
+        U8(spr_addr + 0x20) = 255;
+        U8(spr_addr + 0x21) = 255;
+        U8(spr_addr + 0x22) = 255;
+        U8(spr_addr + 0x23) = 255;
+        U32(spr_addr + 0x24) = 0;
+        hud_init_done[char_idx] = 1;
+        hud_last_bar[char_idx] = -1;
+        hud_last_trail[char_idx] = -1;
+        hud_last_hp[char_idx] = -1;
+    }
+}
+
+static void hud_update_health_bar(int char_idx, unsigned int tex_addr, const unsigned short *base_tex, int hp, int bar_hp10, int trail_hp10) {
+    if (hud_last_bar[char_idx] == bar_hp10 &&
+        hud_last_trail[char_idx] == trail_hp10 &&
+        hud_last_hp[char_idx] == hp) {
+        return;
+    }
+    hud_last_bar[char_idx] = bar_hp10;
+    hud_last_trail[char_idx] = trail_hp10;
+    hud_last_hp[char_idx] = hp;
+
+    unsigned short c_top, c_upper, c_mid, c_bot;
+    if (hp > 50) {
+        c_top   = RGBA5551(80, 235, 95);
+        c_upper = RGBA5551(45, 205, 65);
+        c_mid   = RGBA5551(34, 182, 52);
+        c_bot   = RGBA5551(22, 135, 36);
+    } else if (hp > 25) {
+        c_top   = RGBA5551(250, 230, 80);
+        c_upper = RGBA5551(235, 195, 40);
+        c_mid   = RGBA5551(215, 170, 25);
+        c_bot   = RGBA5551(160, 120, 15);
+    } else {
+        c_top   = RGBA5551(250, 95, 85);
+        c_upper = RGBA5551(230, 50, 45);
+        c_mid   = RGBA5551(205, 35, 30);
+        c_bot   = RGBA5551(150, 20, 20);
+    }
+    unsigned short c_trail = RGBA5551(150, 28, 28);
+
+    for (int row = 0; row < 8; row++) {
+        int ty = 20 + row;
+        int x0 = hud_bar_x0[row];
+        int x1 = hud_bar_x1[row];
+        int span = x1 - x0 + 1;
+        int x_fill = x0 + (span * bar_hp10) / 1000;
+        int x_trail = x0 + (span * trail_hp10) / 1000;
+        unsigned short c_row = (row == 0) ? c_top : (row <= 2) ? c_upper : (row <= 5) ? c_mid : c_bot;
+
+        for (int tx = x0; tx <= x1; tx++) {
+            int idx = ty * HUD_TEX_W + tx;
+            unsigned short px;
+            if (tx < x_fill) {
+                px = c_row;
+            } else if (tx < x_trail) {
+                px = c_trail;
+            } else {
+                px = base_tex[idx];
+            }
+            U16(tex_addr + idx * 2) = px;
+        }
+    }
+}
+
+RECOMP_PATCH void func_800CF6A8(int player_idx, int x, int y) {
+    if (player_idx < 0 || player_idx > 3) {
+        return;
+    }
+    unsigned int player = U32(PLAYER_PTRS + player_idx * 4);
+    if (player == 0) {
+        return;
+    }
+
+    int char_idx = (player == SLOT1_DATA || player_idx == 1) ? 1 : 0;
+    unsigned int spr_addr = (char_idx == 1) ? HUD_SPRITE_P2 : HUD_SPRITE_P1;
+    unsigned int tex_addr = (char_idx == 1) ? HUD_TEX_P2 : HUD_TEX_P1;
+    const unsigned short *base_tex = (char_idx == 1) ? hud_p2_base : hud_p1_base;
+
+    int hp = S8(player + 0x176B);
+    if (hp < 0) hp = 0;
+    if (hp > 100) hp = 100;
+
+    int del10 = S16(0x801B1168 + player_idx * 2);
+    if (del10 < 0) del10 = 0;
+    if (del10 > 1000) del10 = 1000;
+
+    int hp10 = hp * 10;
+    int bar_hp10 = (del10 < hp10) ? del10 : hp10;
+    int trail_hp10 = (del10 > hp10) ? del10 : hp10;
+
+    hud_ensure_loaded(char_idx, spr_addr, tex_addr, base_tex);
+    hud_update_health_bar(char_idx, tex_addr, base_tex, hp, bar_hp10, trail_hp10);
+
+    // Clear bit 0x2000 so func_8007A754 always emits the RDP setup header for our RGBA16 sprite
+    U16(spr_addr + 0x10) = 0x0001;
+
+    int hud_x = x - 28;
+    int hud_y = y - 15;
+    func_8007B8F4(0x801D2C80u, spr_addr, hud_x, hud_y);
+}
+
