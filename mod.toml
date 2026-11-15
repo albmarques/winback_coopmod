@@ -1,0 +1,73 @@
+# WinBack Co-op (v0.2.0): two-player Story co-op with split screen.
+
+[manifest]
+id = "winback_coop"
+version = "0.2.0"
+display_name = "Story Co-op"
+description = "Two-player Story co-op (controller 2) in the game's two-view split screen. Includes the two-player Death Match HUD, Engineer (model 58) for player 2, enemies that see and attack the nearer living player and stay visible in either player's room, and optional friendly fire. Cover, revive and cutscenes are not done yet."
+short_description = "Two-player Story co-op (split screen, HUD, Engineer P2, enemy AI)."
+authors = [ "WinBack co-op" ]
+game_id = "winback"
+minimum_recomp_version = "0.3.0"
+dependencies = [ ]
+optional_dependencies = [ ]
+native_libraries = [ ]
+
+[inputs]
+elf_path = "build/mod.elf"
+mod_filename = "winback_coop"
+func_reference_syms_file = "../../generated/winback.us.syms.toml"
+data_reference_syms_files = [ ]
+additional_files = [ ]
+
+[[manifest.config_options]]
+id = "spawn_offset"
+name = "Player 2 start offset"
+description = "How far, in game units along X, player 2 starts from player 1."
+type = "Number"
+min = 0
+max = 200
+step = 10
+precision = 0
+percent = false
+default = 40
+
+[[manifest.config_options]]
+id = "p2_character"
+name = "Player 2 character"
+description = "Character model for player 2. Engineer loads multiplayer model 58 into slot 55; Jean-Luc keeps Story's already-loaded model."
+type = "Enum"
+options = [ "Engineer", "Jean-Luc" ]
+default = "Engineer"
+
+[[manifest.config_options]]
+id = "hud"
+name = "Two-player HUD"
+description = "Spawn the Death Match HUD object so both viewports show life bars and weapon icons."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "enemies"
+name = "Enemies target nearer player"
+description = "During each enemy update, aim at whichever living player is closer and keep enemies visible when seen by either player."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "friendly_fire"
+name = "Friendly fire"
+description = "Allow player-fired bullets to hit the other player."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "Off"
+
+[[manifest.config_options]]
+id = "log"
+name = "Log status"
+description = "Print the players' state to the log once a second (run the game with --console)."
+type = "Enum"
+options = [ "Off", "On" ]
+default = "On"

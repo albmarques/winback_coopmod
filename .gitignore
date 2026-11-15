@@ -1,0 +1,15 @@
+# Build outputs
+build/
+*.o
+*.elf
+*.nrm
+
+# Scripts and local executables
+*.bat
+*.exe
+*.dll
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db
