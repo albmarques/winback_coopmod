@@ -27,6 +27,9 @@
 #define BTN_NEW_P2  0x80187FB2  // u16 newly pressed buttons P2
 #define BTN_MASK_P1 0x80187FC0  // u16 button mask P1
 #define BTN_MASK_P2 0x80187FC2  // u16 button mask P2
+#define CUTSCENE_FLAG 0x8010EDE4 // u8: non-zero during mid-stage cutscene (mode 3)
+#define CUTSCENE_CAM  0x8011F784 // u8: non-zero when cutscene camera/actor is active
+#define SCRIPT_FLAGS  0x8010E0F4 // u16: bit 4 (0x0010) set while a stage script/cutscene runs
 
 // Base game functions resolved via relocations:
 extern unsigned int func_80027470(int list, int group, int size);
@@ -70,7 +73,7 @@ static int e1e0_mode;
 static int tele_idx;
 
 static int story_play(void) {
-    return (U8(MODE) & 1) && (U16(STATE) & 1);
+    return (U8(MODE) & 1) && (U16(STATE) & 1) && !in_cutscene;
 }
 
 static int coop_active(void) {
@@ -138,7 +141,7 @@ RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
 
 // 2. Player 2's start point, player count, and Versus HUD object creation.
 RECOMP_HOOK("func_8006B310") void coop_stage_players(void) {
-    if (!story_play()) {
+    if (!(U8(MODE) & 1) || !(U16(STATE) & 1)) {
         return;
     }
     float off = (float)recomp_get_config_double("spawn_offset");
@@ -699,7 +702,7 @@ RECOMP_HOOK("func_8009E1E0") void coop_cutscene_mode_begin(int mode) {
     if (!coop_story_session()) {
         return;
     }
-    if (mode == 0) {
+    if (mode != 0) {
         cutscene_protagonist = trigger_player;
         set_protagonist(cutscene_protagonist);
         unsigned int other = (cutscene_protagonist == 1) ? SLOT0_DATA : SLOT1_DATA;
@@ -718,11 +721,12 @@ RECOMP_HOOK_RETURN("func_8009E1E0") void coop_cutscene_mode_end(void) {
     if (!coop_story_session()) {
         return;
     }
-    if (e1e0_mode == 1) {
+    if (e1e0_mode == 0) {
         ensure_normal_player_order();
         set_protagonist(0);
         cutscene_protagonist = 0;
         trigger_player = 0;
+        trigger_ttl = 0;
         in_cutscene = 0;
     }
 }
