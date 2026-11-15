@@ -252,15 +252,14 @@ RECOMP_HOOK("func_800944E0") // Gerenciador de eventos e popups
 
 ### Passo 10: Gatilho e Protagonista das Cutscenes
 ```c
-RECOMP_HOOK("func_8004DE48") // Fila de eventos (linhas de gatilho, type == 1)
-RECOMP_HOOK("func_800A8ED0") // Botão Ação (portas, terminais, switches)
+RECOMP_HOOK("func_8004DE48") // Fila de eventos (linhas de gatilho e ações, type == 1)
 RECOMP_HOOK("func_8009C2E4") // Dispatcher de eventos de fase
 RECOMP_HOOK("func_8009BE18") // Executor de scripts/cutscenes
 RECOMP_HOOK("func_8009E1E0") // Transição de entrada (mode == 0) e saída (mode == 1) de cutscene
 RECOMP_HOOK("func_80098F20") // Teleporte/reposicionamento de cena
 RECOMP_HOOK("func_800A8B10") // Carregamento de tabela/modelo do personagem
 ```
-- **Quem acionou o gatilho (`trigger_player`):** `func_8004DE48` (quando `type == 1`) e `func_800A8ED0` inspecionam `U32(obj + 0x2C)` para registrar se o evento foi disparado pelo P1 (`SLOT0_DATA`) ou pelo P2 (`SLOT1_DATA`).
+- **Quem acionou o gatilho (`trigger_player` e `trigger_ttl`):** `func_8004DE48` (quando `type == 1`) inspeciona `U32(obj + 0x2C)` para registrar se o evento foi disparado pelo P1 (`SLOT0_DATA`) ou pelo P2 (`SLOT1_DATA`) — tanto para linhas de gatilho quanto para interações de botão Ação em portas/terminais/switches (que chamam `func_8004DE48(1, ...)` em `0x800A9868`). Não se hooka `func_800A8ED0` diretamente porque ela executa todo frame para P1 e P2 em sequência, o que sobrescreveria `trigger_player = 1` em todos os frames. Quando o P2 aciona um evento, `trigger_ttl` é ajustado para `180` frames (~3s) e decrementado em `func_800944E0` fora de cutscenes para voltar automaticamente para `0` (P1) caso o evento não abra uma cutscene.
 - **Protagonismo na cutscene (`set_protagonist`):** O motor busca o protagonista da cutscene com `func_8009D558(0xFF)`, que retorna o primeiro slot com `0x18CC == 0xFF`. O mod marca `0x18CC = 0xFF` no jogador que acionou o gatilho e `0x18CC = 0xFE` no parceiro (mantendo o bit `0x80` para que `func_8009E1E0(0)` não o remova ao encerrar a cena).
 - **Troca de contexto e parada do parceiro:** Ao iniciar a cutscene (`func_8009E1E0(0)`), o parceiro tem sua velocidade/ação zerada e, se o P2 for o protagonista (`cutscene_protagonist == 1`), `PLAYER_PTRS`, `CAM_PTRS` e `ROOM_STATE` permanecem trocados durante os scripts (`func_8009C2E4` / `func_8009BE18`) até o fim da cutscene (`func_8009E1E0(1)`).
 - **Teleporte em cena e modelo Engineer:** `func_80098F20` copia a nova posição (`X + spawn_offset`, `Y`, `Z`, ângulo e sala) para o outro jogador não ficar preso em uma sala antiga, e `coop_draw_begin` + `func_800A8B10` restauram os buffers do Engineer (`0x3A`) no `SLOT1_DATA` mesmo com a flag `STATE & 1` desligada durante cutscenes.

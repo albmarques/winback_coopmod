@@ -61,6 +61,7 @@ static unsigned char evt_mgr_saved;
 static unsigned short evt_saved_new_p1;
 static unsigned short evt_saved_mask_p1;
 static int trigger_player;
+static int trigger_ttl;
 static int cutscene_protagonist;
 static unsigned char in_cutscene;
 static unsigned char c2e4_swapped;
@@ -128,6 +129,7 @@ RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
     if (U8(MODE) & 1) {
         U8(PLAYERS) = 1;
         trigger_player = 0;
+        trigger_ttl = 0;
         cutscene_protagonist = 0;
         in_cutscene = 0;
         U32(0x80138EEC) = 0;
@@ -151,6 +153,7 @@ RECOMP_HOOK("func_8006B310") void coop_stage_players(void) {
     U8(PLAYERS) = 2;
     spawn_calls = 0;
     trigger_player = 0;
+    trigger_ttl = 0;
     cutscene_protagonist = 0;
     in_cutscene = 0;
 
@@ -613,20 +616,10 @@ RECOMP_HOOK("func_8004DE48") void coop_event_push(int type, int sub, int val, un
     unsigned int p = U32(obj + 0x2C);
     if (p == SLOT1_DATA) {
         trigger_player = 1;
+        trigger_ttl = 180;
     } else if (p == SLOT0_DATA) {
         trigger_player = 0;
-    }
-}
-
-RECOMP_HOOK("func_800A8ED0") void coop_action_btn(unsigned int obj) {
-    if (!coop_active() || obj == 0) {
-        return;
-    }
-    unsigned int p = U32(obj + 0x2C);
-    if (p == SLOT1_DATA) {
-        trigger_player = 1;
-    } else if (p == SLOT0_DATA) {
-        trigger_player = 0;
+        trigger_ttl = 0;
     }
 }
 
@@ -651,6 +644,12 @@ RECOMP_HOOK_RETURN("func_800944E0") void coop_event_mgr_end(void) {
         U16(BTN_NEW_P1) = evt_saved_new_p1;
         U16(BTN_MASK_P1) = evt_saved_mask_p1;
         evt_mgr_saved = 0;
+    }
+    if (coop_story_session() && !in_cutscene && trigger_ttl > 0) {
+        trigger_ttl--;
+        if (trigger_ttl == 0) {
+            trigger_player = 0;
+        }
     }
 }
 

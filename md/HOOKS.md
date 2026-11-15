@@ -35,9 +35,8 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 | `func_800C958C` | `0x800C958C` (`0x68`) | `HOOK` / `HOOK_RETURN` | `coop_drop_item_begin` / `coop_drop_item_end` | Permite que o P2 pegue itens soltos no chão via `should_p2_pick_item()`. |
 | `func_800A8620` | `0x800A8620` (`0x1C0`) | `HOOK` / `HOOK_RETURN` | `coop_enemy_item_begin` / `coop_enemy_item_end` | Permite que o P2 pegue itens dropados por inimigos via `should_p2_pick_item()`. |
 | `func_800A8B10` | `0x800A8B10` (`0x114`) | `HOOK` / `HOOK_RETURN` | `coop_a8b10_begin` / `coop_a8b10_end` | Salva o argumento `player` e restaura os buffers/modelo Engineer (`0x3A`) no `SLOT1_DATA` após chamadas internas do jogo (inclusive em cutscenes). |
-| `func_8004DE48` | `0x8004DE48` (`0x10C`) | `HOOK` | `coop_event_push` | Detecta qual jogador (`SLOT0_DATA` ou `SLOT1_DATA`) cruzou uma linha de gatilho (`type == 1`) e atualiza `trigger_player`. |
-| `func_800A8ED0` | `0x800A8ED0` (`0x1890`) | `HOOK` | `coop_action_btn` | Detecta qual jogador apertou o botão Ação (portas, terminais, switches) e atualiza `trigger_player`. |
-| `func_800944E0` | `0x800944E0` (`0x248`) | `HOOK` / `HOOK_RETURN` | `coop_event_mgr_begin` / `coop_event_mgr_end` | Faz merge temporário dos botões do P2 (`0x80187FB2` / `0x80187FC2`) nos do P1 quando ambos têm `0x16EC < 2`, permitindo dispensar popups de itens e pular cenas. |
+| `func_8004DE48` | `0x8004DE48` (`0x10C`) | `HOOK` | `coop_event_push` | Detecta qual jogador (`SLOT0_DATA` ou `SLOT1_DATA`) disparou um gatilho/interação (`type == 1`) e atualiza `trigger_player` + `trigger_ttl`. |
+| `func_800944E0` | `0x800944E0` (`0x248`) | `HOOK` / `HOOK_RETURN` | `coop_event_mgr_begin` / `coop_event_mgr_end` | Faz merge temporário dos botões do P2 (`0x80187FB2` / `0x80187FC2`) nos do P1 quando ambos têm `0x16EC < 2` (popups/skip) e decrementa `trigger_ttl` fora de cutscenes. |
 | `func_8009C2E4` | `0x8009C2E4` (`0x348`) | `HOOK` / `HOOK_RETURN` | `coop_event_dispatch_begin` / `coop_event_dispatch_end` | Define `0x18CC` do protagonista (`set_protagonist(trigger_player)`) e troca `PLAYER_PTRS`/`CAM_PTRS`/`ROOM_STATE` se `trigger_player == 1` antes de despachar eventos de fase. |
 | `func_8009BE18` | `0x8009BE18` (`0x204`) | `HOOK` / `HOOK_RETURN` | `coop_script_run_begin` / `coop_script_run_end` | Garante que durante `in_cutscene` com `cutscene_protagonist == 1` os ponteiros continuem apontando para o P2 como protagonista do script. |
 | `func_8009E1E0` | `0x8009E1E0` (`0x818`) | `HOOK` / `HOOK_RETURN` | `coop_cutscene_mode_begin` / `coop_cutscene_mode_end` | Na entrada da cutscene (`mode == 0`), fixa `cutscene_protagonist`, para o movimento do outro jogador e ativa `in_cutscene = 1`. Na saída (`mode == 1`), restaura ordem P1/P2 e reseta o estado. |
@@ -95,9 +94,8 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
    - Quando ambos têm `0x16EC < 2`, aplica `|=` dos botões do P2 (`BTN_NEW_P2`, `BTN_MASK_P2`) nos registradores do P1 (`BTN_NEW_P1`, `BTN_MASK_P1`) e restaura no retorno.
 
 ### 3.6. Cutscenes e Protagonista Dinâmico
-1. **`coop_event_push` (`func_8004DE48`)** e **`coop_action_btn` (`func_800A8ED0`)**:
-   - Em `func_8004DE48(type, sub, val, obj)`, se `type == 1 && obj != 0`, verifica `U32(obj + 0x2C)` para gravar `trigger_player = 0` (`SLOT0_DATA`) ou `1` (`SLOT1_DATA`).
-   - Em `func_800A8ED0(obj)`, verifica `U32(obj + 0x2C)` pelo mesmo critério.
+1. **`coop_event_push` (`func_8004DE48`)**:
+   - Em `func_8004DE48(type, sub, val, obj)`, se `type == 1 && obj != 0`, verifica `U32(obj + 0x2C)` para gravar `trigger_player = 0` (`SLOT0_DATA`) ou `1` (`SLOT1_DATA`, com `trigger_ttl = 180` frames decrementado em `coop_event_mgr_end`). Isso cobre tanto linhas de gatilho quanto interações de botão Ação (que chamam `func_8004DE48(1, ..., s1)` em `0x800A9868`).
 2. **`coop_event_dispatch_*` (`func_8009C2E4`)** e **`coop_script_run_*` (`func_8009BE18`)**:
    - Aplicam `set_protagonist(trigger_player)` (`0x18CC = 0xFF` no protagonista e `0xFE` no outro) e mantêm `PLAYER_PTRS`, `CAM_PTRS` e `ROOM_STATE` trocados enquanto `trigger_player == 1` ou `in_cutscene && cutscene_protagonist == 1`.
 3. **`coop_cutscene_mode_*` (`func_8009E1E0`)**:
