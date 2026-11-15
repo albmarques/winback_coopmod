@@ -32,6 +32,7 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 | `func_80057BB4` | `0x80057BB4` (`0x2C0`) | `HOOK` / `HOOK_RETURN` | `coop_damage_begin` / `coop_damage_end` | Alterna `MODE = 1` dentro de `func_80057BB4` durante `bullet_split` para aplicar dano direto de Story Mode sem depender da flag de HUD Versus. |
 | `func_80058438` | `0x80058438` (`0x4C4`) | `HOOK` / `HOOK_RETURN` | `coop_lockon_begin` / `coop_lockon_end` | Zera temporariamente `in_use (+0x92)` do outro jogador durante a busca de alvo para remover o lock-on automático entre players. |
 | `func_800ABC04` | `0x800ABC04` (`0x830`) | `HOOK` / `HOOK_RETURN` | `coop_wall_cover_begin` / `coop_wall_cover_end` | Ativa `MODE = 2` para pular o check de distância de slots (`0x1718 < 150.0f`) que bloqueava cover na parede entre P1 e P2. |
+| `func_8003C58C` | `0x8003C58C` (`0x5F4`) | `HOOK` / `HOOK_RETURN` | `coop_room_begin` / `coop_room_end` | Força `MODE = 2` em `coop_story_session()` (inclusive durante cutscenes/escadas) e desinverte temporariamente `ROOM_STATE` caso `PLAYER_PTRS` esteja trocado, alinhando com `S16(player + 0x90)`. |
 | `func_8003FCE4` | `0x8003FCE4` (`0x39C`) | `HOOK` / `HOOK_RETURN` | `coop_box_col_begin` / `coop_box_col_end` | Troca `ROOM_STATE` (`0x8016A410` ↔ `0x8016A414`) quando chamado para P2, habilitando cover em caixas/pilares e portas na sala do P2. |
 | `func_800AB594` | `0x800AB594` (`0x3B8`) | `HOOK` / `HOOK_RETURN` | `coop_kick_begin` / `coop_kick_end` | Zera temporariamente `in_use (+0x92)` do parceiro quando `friendly_fire` está desligado (`!= 0`), evitando chute acidental ao tentar dar cover. |
 | `func_800873A4` | `0x800873A4` (`0x1CC`) | `HOOK` / `HOOK_RETURN` | `coop_stage_item_begin` / `coop_stage_item_end` | Permite que o P2 pegue itens colocados na fase trocando `PLAYER_PTRS` e `ROOM_STATE` via `should_p2_pick_item()`. |
@@ -42,8 +43,9 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 | `func_800944E0` | `0x800944E0` (`0x248`) | `HOOK` / `HOOK_RETURN` | `coop_event_mgr_begin` / `coop_event_mgr_end` | Detecta a flag de morte `DEATH_FLAG` (`0x8010E0FA`) antes de `func_8009CBB0` para definir o jogador morto como protagonista da cutscene de morte; faz merge temporário dos botões do P2 nos do P1 quando ambos têm `0x16EC < 2` (popups/skip) e decrementa `trigger_ttl`. |
 | `func_8009C2E4` | `0x8009C2E4` (`0x348`) | `HOOK` / `HOOK_RETURN` | `coop_event_dispatch_begin` / `coop_event_dispatch_end` | Define `0x18CC` do protagonista (`set_protagonist(trigger_player)`) e troca `PLAYER_PTRS`/`CAM_PTRS`/`ROOM_STATE` + floats de câmera se `trigger_player == 1` antes de despachar eventos de fase. |
 | `func_8009BE18` | `0x8009BE18` (`0x204`) | `HOOK` / `HOOK_RETURN` | `coop_script_run_begin` / `coop_script_run_end` | Garante que durante `in_cutscene` com `cutscene_protagonist == 1` os ponteiros continuem apontando para o P2 como protagonista do script. |
-| `func_8009E1E0` | `0x8009E1E0` (`0x818`) | `HOOK` / `HOOK_RETURN` | `coop_cutscene_mode_begin` / `coop_cutscene_mode_end` | Na entrada da cutscene (`mode == 1` ou `mode == 3`), fixa `cutscene_protagonist`, para o movimento do outro jogador (`U8(other + 0x16F0) = 1`) e ativa `in_cutscene = 1`. Na saída (`mode == 0` ou `mode == 2`), restaura ordem P1/P2 e reseta o estado. |
-| `func_80098F20` | `0x80098F20` (`0x150`) | `HOOK` / `HOOK_RETURN` | `coop_cutscene_teleport_begin` / `coop_cutscene_teleport_end` | Quando uma cutscene reposiciona/teleporta um jogador no meio da fase, move o parceiro junto (`X + spawn_offset`, `Y`, `Z`, ângulo, polígono `0x8A` e sala `0x8E`). |
+| `func_8009E1E0` | `0x8009E1E0` (`0x818`) | `HOOK` / `HOOK_RETURN` | `coop_cutscene_mode_begin` / `coop_cutscene_mode_end` | Na entrada da cutscene (`mode == 1` ou `mode == 3`), detecta ações diretas (`0x16EC == 23/25/12/13`), fixa `cutscene_protagonist`, para o movimento do outro jogador e ativa `in_cutscene = 1`. Na saída (`mode == 0` ou `mode == 2`), restaura a ordem P1/P2 e limpa a flag `0x20000200` em `SLOT1_DATA + 0x00F4`. |
+| `func_80098F20` | `0x80098F20` (`0x150`) | `HOOK` / `HOOK_RETURN` | `coop_cutscene_teleport_begin` / `coop_cutscene_teleport_end` | Mantém transições intra-fase (escadas/mudança de sala) independentes por jogador; quando o P2 é o protagonista da transição (`PLAYER_PTRS[0] == SLOT1_DATA`), move `START_POS`/`START_ID`/`START_HEAD`/`START_CAM` para o slot 1 e preserva os do P1 no slot 0. |
+| `func_800CF6A8` | `0x800CF6A8` (`0xC4`) | `PATCH` | `func_800CF6A8` | Substitui a barra de vida padrão pela HUD sci-fi customizada (`224x48` em escala `0.5f`) com retratos 3D do Jean-Luc (P1) e Engenheiro (P2). |
 
 ---
 
@@ -110,12 +112,16 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 3. **`coop_event_dispatch_*` (`func_8009C2E4`)** e **`coop_script_run_*` (`func_8009BE18`)**:
    - Aplicam `set_protagonist(trigger_player)` (`0x18CC = 0xFF` no protagonista e `0xFE` no outro) e mantêm `PLAYER_PTRS`, `CAM_PTRS`, `ROOM_STATE` e os 6 pares de floats de câmera (`0x8016D6D8`, `0x801B0CE8`, `0x80188FB0`, `0x80168748`, `0x8016D268`, `0x801C3808`) trocados enquanto `trigger_player == 1` ou `in_cutscene && cutscene_protagonist == 1`.
 4. **`coop_cutscene_mode_*` (`func_8009E1E0`)**:
-   - Em `mode == 1 || mode == 3` (início de cutscene normal ou cutscene de morte): garante `trigger_player = 1` caso `SLOT1_DATA` esteja morto (`HP <= 0`), trava `cutscene_protagonist = trigger_player`, para o movimento do outro jogador (`0x0154 = 0`, `0x0158 = 0`, `U16(0x16EC) = 0`, `U8(0x16F0) = 1`), executa `swap_all_player_state()` se `cutscene_protagonist == 1` e liga `in_cutscene = 1`.
-   - Em `mode == 0 || mode == 2` (fim de cutscene normal ou fim da cutscene de morte): restaura `ensure_normal_player_order()`, `set_protagonist(0)`, `cutscene_protagonist = 0`, `trigger_player = 0`, `trigger_ttl = 0` e `in_cutscene = 0`.
+   - Em `mode == 1 || mode == 3` (início de cutscene normal, escada/porta ou cutscene de morte): verifica também diretamente `U16(SLOT0_DATA/SLOT1_DATA + 0x16EC)` (`23` = escada, `25` = switch/painel, `12`/`13` = porta) e `S8(SLOT1_DATA + 0x176B) <= 0` para definir `trigger_player`, trava `cutscene_protagonist = trigger_player`, para o movimento do outro jogador (`0x0154 = 0`, `0x0158 = 0`, `U16(0x16EC) = 0`, `U8(0x16F0) = 1`), executa `swap_all_player_state()` se `cutscene_protagonist == 1` e liga `in_cutscene = 1`.
+   - Em `mode == 0 || mode == 2` (fim de cutscene normal ou fim da cutscene de morte): restaura `ensure_normal_player_order()`, limpa a flag de bloqueio de cutscene em `SLOT1_DATA` (`0x16EC = 0`, `0x16F0 = 1`, `0x0088 = 0x1000`, `0x00F4 = (0x00F4 & ~0x20000200u) | 2`), `set_protagonist(0)`, `cutscene_protagonist = 0`, `trigger_player = 0`, `trigger_ttl = 0` e `in_cutscene = 0`.
    - Em `coop_draw_begin` (`func_80025F10`), antes de `if (coop_active())`, há também um fallback defensivo que limpa `in_cutscene` e restaura a ordem normal se `(U16(STATE) & 1)` estiver ativo e `CUTSCENE_FLAG == 0`, `CUTSCENE_CAM == 0` e `(U16(SCRIPT_FLAGS) & 0x0010) == 0`.
 5. **`coop_cutscene_teleport_*` (`func_80098F20`)**:
-   - Copia `X + spawn_offset`, `Y`, `Z`, ângulo (`0x64`), polígono (`0x8A`) e sala (`0x8E`) de `PLAYER_PTRS[tele_idx]` para `PLAYER_PTRS[1 - tele_idx]`.
-6. **`coop_a8b10_*` (`func_800A8B10`)**:
+   - Mantém o teleporte intra-fase (escadas e transições de área dentro do mesmo estágio) restrito apenas ao jogador que acionou a transição (`PLAYER_PTRS[tele_idx]`), permitindo que o outro jogador permaneça em sua área atual.
+   - Quando `player_idx == 0` e `U32(PLAYER_PTRS) == SLOT1_DATA` (Player 2 executando a transição), salva `START_POS[0]`, `START_ID[0]`, `START_HEAD[0]` e `START_CAM[0]` na entrada e, no retorno, copia os novos valores gravados para o slot 1 (`START_POS + 12`, `START_ID + 2`, `START_HEAD + 4`, `START_CAM + 12`) e restaura os dados do Player 1 no slot 0.
+6. **`coop_room_begin` / `coop_room_end` (`func_8003C58C`)**:
+   - Ativa `U8(MODE) = 2` sempre que `coop_story_session() && U8(MODE) == 1` (incluindo chamadas de `func_8003C58C` feitas por `func_80098F20` durante `in_cutscene == 1`).
+   - Como `func_8003C58C` indexa `ROOM_STATE` (`0x8016A410`) pelo campo fixo `S16(player + 0x90)` (`0` para `SLOT0_DATA`, `1` para `SLOT1_DATA`), desinverte temporariamente `ROOM_STATE[0]` ↔ `ROOM_STATE[1]` caso `U32(PLAYER_PTRS) == SLOT1_DATA` e restaura no retorno.
+7. **`coop_a8b10_*` (`func_800A8B10`)**:
    - Restaura os buffers do Engineer no `SLOT1_DATA` sempre que `func_800A8B10` rodar para o Player 2 (incluindo transições de cutscene).
 
 ---
@@ -283,6 +289,66 @@ Esta seção documenta o mapeamento completo de engenharia reversa do pipeline g
   - `func_80071FE0` lê um bitstream MSB-first (`mask = 0x80 >> bit`):
     - Bit de controle `1`: lê 8 bits literais e grava no destino e no ring buffer de `0x4000` bytes (`0x8021FA00`, cursor inicial `r = 1`);
     - Bit de controle `0`: lê 14 bits de posição no ring buffer (`0` = fim do stream) e 4 bits de comprimento (`count = len4 + 3`, pois `0x80072064: addiu $s2, $v0, 2` e o loop copia de `0` até `$s2` inclusive via `slt $v0, $s2, $s1`).
+
+### 3.17 `func_80098F20` & `func_8003C58C` — Arquitetura Interna de Transição de Sala/Escada Intra-Fase e Indexação de `ROOM_STATE`
+
+Esta seção documenta o mapeamento completo de engenharia reversa da transição de área por escada (`func_80098F20`), do rastreador de sala/subsala (`func_8003C58C`) e do desbloqueio atrasado de cutscenes (`func_800A0F58` / `func_800A10B8`):
+
+#### 1. Diferença entre Mudança de Estágio (`0x8009B1A0`) e Transição Intra-Fase / Escada (`0x8009B1EC` $\rightarrow$ `func_80098F20`)
+- No dispatcher de opcodes da VM de scripts de fase (`0x8009B180..0x8009B200`):
+  - **Mudança de Estágio Completa (`0x8009B1A0..0x8009B1E8`):**
+    - Grava `U16(0x8016A418) = 1` (flag de requisição de carregamento de novo estágio), `U16(0x8016A41A) = next_stage_id` e chama `func_8009E184()`, disparando um novo ciclo completo `func_8004C438` $\rightarrow$ `func_8006B310` (`coop_stage_players`).
+  - **Transição Intra-Fase / Escada (`0x8009B1EC..0x8009B1F8`):**
+    - Único ponto em toda a ROM que chama **`func_80098F20`** (`0x8009B1F0: jal 0x80098F20; addu $a1, $zero, $zero`), passando `a0 = pos_id` e `a1 = 0` (`player_idx = 0`).
+    - Como todas as salas de uma fase estão simultaneamente carregadas na RAM e cada viewport (`vp = 0` e `vp = 1`) renderiza a sala em `ROOM_STATE[vp]` (`0x8016A410` e `0x8016A414`), os dois jogadores podem permanecer em salas/áreas completamente distintas dentro da mesma fase.
+
+#### 2. Funcionamento Interno de `func_80098F20(int pos_id, int player_idx)` (`0x80098F20..0x8009906C`)
+- `0x80098F50`: chama `func_800513FC(pos_id, sp + 0x10, sp + 0x30)` para buscar na tabela de pontos de entrada da fase:
+  - `sp + 0x10..0x18`: coordenadas `X, Y, Z` (`float[3]`) da nova posição;
+  - `sp + 0x20`: ângulo de rotação inicial (`float`);
+  - `sp + 0x2A`: `start_id` (`u16`, índice de polígono/ponto de partida);
+  - `sp + 0x30..0x38`: coordenadas `X, Y, Z` (`float[3]`) de câmera inicial.
+- `0x80098F54..0x80098FD8`: grava os valores buscados nos arrays globais indexados por `player_idx` (que na chamada da VM em `0x8009B1F4` é sempre `0`):
+  - `U16(0x8016A41E) = pos_id`;
+  - `START_POS[player_idx]` (`0x8016A424 + player_idx * 12`) = `X, Y, Z`;
+  - `START_ID[player_idx]` (`0x8016A39A + player_idx * 2`) = `start_id`;
+  - `START_HEAD[player_idx]` (`0x8016A454 + player_idx * 4`) = `heading`;
+  - `START_CAM[player_idx]` (`0x8016A464 + player_idx * 12`) = `cam_X, cam_Y, cam_Z`.
+- `0x80098FDC..0x80099050`: carrega `p = U32(0x801390C0 + player_idx * 4)` (`PLAYER_PTRS[player_idx]`), copia `X, Y, Z` para `p + 0x00..0x08`, `heading` para `p + 0x64`, `start_id` para `U16(p + 0x8A)`, resolve a sala correspondente via `room = func_8003CB80(start_id & 0x0FFF)` (`0x80099044`) e grava `U16(p + 0x8E) = room`.
+- `0x80099054`: chama **`func_8003C58C(p)`** para atualizar `ROOM_STATE` com a nova sala de `p`.
+
+#### 3. Indexação de `ROOM_STATE` por `S16(player + 0x90)` em `func_8003C58C(unsigned int player)` (`0x8003C58C..0x8003CB68`)
+- Em **`0x8003C5CC..0x8003C5EC`**:
+  ```mips
+  0x8003C5CC: lh  $v0, 0x0090($s0)   # idx = S16(player + 0x90) (0 p/ SLOT0_DATA, 1 p/ SLOT1_DATA)
+  0x8003C5D0: lhu $v1, 0x008E($s0)   # room = U16(player + 0x8E)
+  0x8003C5DC: sll $v0, $v0, 2        # offset = idx * 4
+  0x8003C5E0: lui $at, 0x8017
+  0x8003C5E4: addu $at, $at, $v0
+  0x8003C5EC: sh  $v1, 0xA410($at)   # U16(0x8016A410 + idx * 4) = room (ROOM_STATE[idx].room)
+  ```
+- Em **`0x8003C6A0..0x8003C84C`** (quando `U8(0x8016A40E) & 2 != 0`, isto é, `MODE == 2`):
+  - Atualiza a subsala `U16(0x8016A412 + idx * 4)` (`ROOM_STATE[idx].subroom`) e os estados de transição `0x8012D400[idx]` / `0x801CF9B8[idx]` exclusivamente para o índice `idx = S16(player + 0x90)`, sincronizando subsalas de portas abertas caso ambos os jogadores estejam na mesma sala (`0x8003C7A8..0x8003C828`).
+- Em **`0x8003C850..0x8003CB50`** (quando `U8(0x8016A40E) & 2 == 0`, isto é, `MODE == 1`):
+  - Executa a lógica single-player que lê `0x8016A410` (`ROOM_STATE[0].room`) e `0x8012D400[0]` fixamente no índice `0`.
+- **Por que ocorria corrupção de sala quando o Player 2 subia uma escada:**
+  1. Como `func_80098F20` chama `func_8003C58C` **dentro** da cutscene da escada (`in_cutscene == 1`), `coop_active()` retornava `0` e `U8(MODE)` permanecia `1` durante `func_8003C58C`.
+  2. Quando o Player 2 (`SLOT1_DATA`, cujo `S16(player + 0x90)` é fixamente **`1`**) subia uma escada, `swap_all_player_state()` havia trocado `ROOM_STATE[0]` ↔ `ROOM_STATE[1]` (colocando a sala do P2 em `ROOM_STATE[0]` e a sala do P1 em `ROOM_STATE[1]`).
+  3. Ao rodar com `ROOM_STATE` trocado, `func_8003C58C(SLOT1_DATA)` usava `S16(SLOT1_DATA + 0x90) == 1` e gravava a nova sala do P2 em `ROOM_STATE[1]` (sobrescrevendo a sala do P1!), deixando a sala antiga do P2 em `ROOM_STATE[0]`. No fim da cutscene, quando `ensure_normal_player_order()` destroca `ROOM_STATE[0]` ↔ `ROOM_STATE[1]`, o P1 ficava com a sala nova do P2 e o P2 voltava para sua sala antiga.
+- **Solução em `coop_room_begin` / `coop_room_end`:**
+  - `coop_room_begin` ativa `U8(MODE) = 2` sempre que `coop_story_session() && U8(MODE) == 1` (cobrindo tanto gameplay normal quanto cutscenes/escadas).
+  - Se `U32(PLAYER_PTRS) == SLOT1_DATA && U32(PLAYER_PTRS + 4) == SLOT0_DATA` (indicando que `ROOM_STATE` está invertido), `coop_room_begin` desinverte temporariamente `ROOM_STATE[0]` ↔ `ROOM_STATE[1]` antes de `func_8003C58C` rodar e `coop_room_end` restaura a inversão no retorno.
+
+#### 4. Detecção da Ação de Escada (`0x16EC == 23`) e Callbacks de Saída de Cutscene (`func_800A0F58` / `func_800A10B8`)
+- Em `func_8009E1E0(3)` (`0x8009E888..0x8009E998`), ao iniciar uma cutscene in-game:
+  - `0x8009E888`: liga o bit `0x20000000` em `U32(PLAYER_PTRS[0] + 0x00F4)`.
+  - `0x8009E8EC..0x8009E918`: inspeciona `U16(PLAYER_PTRS[0] + 0x16EC)` procurando especificamente as ações:
+    - `25` (`0x19`): acionamento de painel/switch;
+    - **`23` (`0x17`)**: subir/descer escada;
+    - `12` (`0x0C`) / `13` (`0x0D`): abrir porta.
+- Ao encerrar a cutscene em `func_8009E1E0(0)` (`0x8009E4F0` / `0x8009E58C`), o jogo cria uma tarefa temporária de 2 frames (`func_800A1190` $\rightarrow$ callback **`func_800A10B8`** quando `STATE & 1 != 0`, ou `func_800A1048` $\rightarrow$ callback **`func_800A0F58`** quando `STATE & 1 == 0`) que, 2 frames depois, limpa `U8(0x8010EDE4) = 0` e executa em `PLAYER_PTRS[0]`:
+  - `U16(p + 0x16EC) = 0`, `U8(p + 0x16F0) = 1`, `U16(p + 0x0088) = 0x1000`, `U32(p + 0x00F4) = (U32(p + 0x00F4) & ~0x20000000u) | 2`.
+- Como `coop_cutscene_mode_end` restaura a ordem normal (`PLAYER_PTRS[0] = SLOT0_DATA`) imediatamente no retorno de `func_8009E1E0(0)`, ele também aplica esse mesmo desbloqueio diretamente em `SLOT1_DATA` para garantir que o Player 2 nunca fique com o bit `0x20000000` preso em `+0x00F4` após usar uma escada ou porta.
 
 ---
 

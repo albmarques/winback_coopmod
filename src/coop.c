@@ -60,6 +60,7 @@ static unsigned int last_log;
 // Cover, item pickup, and cutscene state:
 static unsigned char cover_split;
 static unsigned char room_split;
+static unsigned char room_swapped;
 static unsigned char box_room_swapped;
 static unsigned int kick_other_player;
 static unsigned short kick_saved_in_use;
@@ -708,13 +709,28 @@ RECOMP_HOOK_RETURN("func_800ABC04") void coop_wall_cover_end(void) {
 
 RECOMP_HOOK("func_8003C58C") void coop_room_begin(void) {
     room_split = 0;
-    if (coop_active()) {
+    room_swapped = 0;
+    if (coop_story_session() && U8(MODE) == 1) {
         U8(MODE) = 2;
         room_split = 1;
+    }
+    if (coop_story_session() && U32(PLAYER_PTRS) == SLOT1_DATA && U32(PLAYER_PTRS + 4) == SLOT0_DATA) {
+        unsigned int r0 = U32(ROOM_STATE);
+        unsigned int r1 = U32(ROOM_STATE + 4);
+        U32(ROOM_STATE) = r1;
+        U32(ROOM_STATE + 4) = r0;
+        room_swapped = 1;
     }
 }
 
 RECOMP_HOOK_RETURN("func_8003C58C") void coop_room_end(void) {
+    if (room_swapped) {
+        unsigned int r0 = U32(ROOM_STATE);
+        unsigned int r1 = U32(ROOM_STATE + 4);
+        U32(ROOM_STATE) = r1;
+        U32(ROOM_STATE + 4) = r0;
+        room_swapped = 0;
+    }
     if (room_split) {
         U8(MODE) = 1;
         room_split = 0;
@@ -971,6 +987,13 @@ RECOMP_HOOK("func_8009E1E0") void coop_cutscene_mode_begin(int mode) {
         return;
     }
     if (mode == 1 || mode == 3) {
+        unsigned short act0 = U16(SLOT0_DATA + 0x16EC);
+        unsigned short act1 = U16(SLOT1_DATA + 0x16EC);
+        if (act1 == 23 || act1 == 25 || act1 == 12 || act1 == 13) {
+            trigger_player = 1;
+        } else if (act0 == 23 || act0 == 25 || act0 == 12 || act0 == 13) {
+            trigger_player = 0;
+        }
         if (S8(SLOT1_DATA + 0x176B) <= 0 && S8(SLOT0_DATA + 0x176B) > 0) {
             trigger_player = 1;
         }
@@ -994,6 +1017,10 @@ RECOMP_HOOK_RETURN("func_8009E1E0") void coop_cutscene_mode_end(void) {
     }
     if (e1e0_mode == 0 || e1e0_mode == 2) {
         ensure_normal_player_order();
+        U16(SLOT1_DATA + 0x16EC) = 0;
+        U8(SLOT1_DATA + 0x16F0) = 1;
+        U16(SLOT1_DATA + 0x0088) = 0x1000;
+        U32(SLOT1_DATA + 0x00F4) = (U32(SLOT1_DATA + 0x00F4) & ~0x20000200u) | 0x00000002u;
         set_protagonist(0);
         cutscene_protagonist = 0;
         trigger_player = 0;
@@ -1002,28 +1029,53 @@ RECOMP_HOOK_RETURN("func_8009E1E0") void coop_cutscene_mode_end(void) {
     }
 }
 
+static unsigned char tele_saved_p0;
+static float tele_saved_pos[3];
+static unsigned short tele_saved_id;
+static float tele_saved_head;
+static float tele_saved_cam[3];
+
 RECOMP_HOOK("func_80098F20") void coop_cutscene_teleport_begin(int pos_id, int player_idx) {
     (void)pos_id;
     tele_idx = player_idx;
+    tele_saved_p0 = 0;
+    if (coop_story_session() && player_idx == 0 && U32(PLAYER_PTRS) == SLOT1_DATA) {
+        tele_saved_pos[0] = F32(START_POS + 0);
+        tele_saved_pos[1] = F32(START_POS + 4);
+        tele_saved_pos[2] = F32(START_POS + 8);
+        tele_saved_id = U16(START_ID);
+        tele_saved_head = F32(START_HEAD);
+        tele_saved_cam[0] = F32(START_CAM + 0);
+        tele_saved_cam[1] = F32(START_CAM + 4);
+        tele_saved_cam[2] = F32(START_CAM + 8);
+        tele_saved_p0 = 1;
+    }
 }
 
 RECOMP_HOOK_RETURN("func_80098F20") void coop_cutscene_teleport_end(void) {
     if (!coop_story_session()) {
         return;
     }
-    if (tele_idx != 0 && tele_idx != 1) {
-        return;
-    }
-    unsigned int src = U32(PLAYER_PTRS + tele_idx * 4);
-    unsigned int dst = U32(PLAYER_PTRS + (1 - tele_idx) * 4);
-    if (src != 0 && dst != 0) {
-        float off = (float)recomp_get_config_double("spawn_offset");
-        F32(dst + 0x00) = F32(src + 0x00) + off;
-        F32(dst + 0x04) = F32(src + 0x04);
-        F32(dst + 0x08) = F32(src + 0x08);
-        F32(dst + 0x64) = F32(src + 0x64);
-        U16(dst + 0x8A) = U16(src + 0x8A);
-        U16(dst + 0x8E) = U16(src + 0x8E);
+    if (tele_saved_p0) {
+        // Move P2's newly written start/camera data into slot 1 and restore P1's slot 0 data.
+        F32(START_POS + 12 + 0) = F32(START_POS + 0);
+        F32(START_POS + 12 + 4) = F32(START_POS + 4);
+        F32(START_POS + 12 + 8) = F32(START_POS + 8);
+        U16(START_ID + 2) = U16(START_ID);
+        F32(START_HEAD + 4) = F32(START_HEAD);
+        F32(START_CAM + 12 + 0) = F32(START_CAM + 0);
+        F32(START_CAM + 12 + 4) = F32(START_CAM + 4);
+        F32(START_CAM + 12 + 8) = F32(START_CAM + 8);
+
+        F32(START_POS + 0) = tele_saved_pos[0];
+        F32(START_POS + 4) = tele_saved_pos[1];
+        F32(START_POS + 8) = tele_saved_pos[2];
+        U16(START_ID) = tele_saved_id;
+        F32(START_HEAD) = tele_saved_head;
+        F32(START_CAM + 0) = tele_saved_cam[0];
+        F32(START_CAM + 4) = tele_saved_cam[1];
+        F32(START_CAM + 8) = tele_saved_cam[2];
+        tele_saved_p0 = 0;
     }
 }
 
