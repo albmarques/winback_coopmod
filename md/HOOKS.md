@@ -23,6 +23,9 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 | `func_80034364` | `0x80034364` (`0x1A0`) | `HOOK_RETURN` | `coop_keep_slot` | Restaura `p2 + 0x92 = 1` (`in_use`) após o spawner de inimigos limpar slots `1..7`. |
 | `func_800593EC` | `0x800593EC` (`0xA70`) | `HOOK_RETURN` | `coop_p2_model` | Define protagonista inicial (`0x18CC`), carrega modelo Engineer (`0x3A`), texturas e juntas do P2 na 2ª chamada. |
 | `func_80025F10` | `0x80025F10` (`0x560`) | `HOOK` / `HOOK_RETURN` | `coop_draw_begin` / `coop_draw_end` | Preserva buffers do Engineer (inclusive em cutscenes), ativa `MODE = 2` (split-screen) e `0x8010F848 = 0x10` (HUD) no desenho, e restaura `MODE = 1`. |
+| `func_80026EB8` | `0x80026EB8` (`0x288`) | `HOOK` / `HOOK_RETURN` | `coop_fb_clear_begin` / `coop_fb_clear_end` | Define `0x8016A40F` na entrada do clear do framebuffer (após `func_80026A10` sobrescrevê-lo em `0x80025F38`) e emite comandos RDP de fill preto (`0x00010001`) apenas na metade da tela do jogador que estiver em sala interna fechada. |
+| `func_800C4EE0` | `0x800C4EE0` (`0xD0`) | `HOOK` / `HOOK_RETURN` | `coop_sky_update_begin` / `coop_sky_update_end` | Redireciona temporariamente `obj + 0x20` e `player + 0x8E` para o jogador externo (`get_outdoor_room`) durante o update da matriz do Sky Dome (`0x01006640`). |
+| `func_800C4FB0` | `0x800C4FB0` (`0x30C`) | `HOOK` / `HOOK_RETURN` | `coop_sky_draw_begin` / `coop_sky_draw_end` | Redireciona temporariamente `obj + 0x20`, `PLAYER_PTRS[0]` e `player + 0x8E` de acordo com o viewport atual (`0x8016A40F`), desenhando nuvens 2D e Sky Dome 3D apenas nos viewports que enxergam área externa. |
 | `func_800D1E24` | `0x800D1E24` (`0x2A8`) | `HOOK` / `HOOK_RETURN` | `coop_hud_update_begin` / `coop_hud_update_end` | Ativa `MODE = 2` durante o update da HUD para atualizar vida, arma, munição, reload e laser de P1 e P2. |
 | `func_800337A8` | `0x800337A8` (`0xBC0`) | `HOOK` / `HOOK_RETURN` | `coop_enemy_begin` / `coop_enemy_end` | Troca ponteiros P1/P2 quando P2 está vivo e mais próximo (histerese `0.64`) e mantém inimigos visíveis (`~0x100`) nas salas de ambos. |
 | `func_800B876C` | `0x800B876C` (`0x500`) | `HOOK` / `HOOK_RETURN` | `coop_bullet_begin` / `coop_bullet_end` | Ativa `MODE = 2` para projéteis de jogadores quando `friendly_fire` está ligado (`0 = On`). |
@@ -58,7 +61,7 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
    - Condição: `coop_active()`.
    - Ação: restaura `U16(p2 + 0x92) = 1` após `func_80034364` limpar `in_use` dos slots `1..7`.
 
-### 3.2. Modelo Engineer (`0x3A`) e Renderização / HUD
+### 3.2. Modelo Engineer (`0x3A`), Renderização Split-Screen, HUD e Céu/Salas Internas-Externas
 1. **`coop_p2_model` (`func_800593EC` retorno)**:
    - Incrementa `spawn_calls`. Na 2ª chamada (`spawn_calls == 2`) em Story com 2 jogadores:
    - Chama `set_protagonist(0)` (`SLOT0_DATA->0x18CC = 0xFF`, `SLOT1_DATA->0x18CC = 0xFE`).
@@ -68,6 +71,12 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
    - Em gameplay ativo (`coop_active()`): se `in_cutscene` ainda estiver `1`, restaura a ordem normal P1/P2; roda `log_status()` se `log != 0`; ativa `MODE = 2`, `0x8016A495 = 1`, `0x8016A4C1 = 0`, `0x8016A4BD = 0xFF`, `0x8010F848 = 0x10`, `0x8010F844 = 0`, `0x8010F845 = 0` e restaura no retorno.
 3. **`coop_hud_update_begin` / `coop_hud_update_end` (`func_800D1E24`)**:
    - Em `coop_active()`, alterna `MODE` para `2` durante `func_800D1E24` para atualizar barras de vida (`0x801B1168+`), arma/munição/reload/laser (`0x8011FB80+`) de ambos os jogadores.
+4. **`coop_fb_clear_begin` / `coop_fb_clear_end` (`func_80026EB8`)**:
+   - Na entrada de `func_80026EB8` (logo após `func_80026A10(dl, 0, 0)` em `0x80025F38` ter sobrescrito `0x8016A40F = 0`), calcula `fb_p0_out` e `fb_p1_out` via `room_is_outdoor(room, subroom)` e define `U8(0x8016A40F) = (!fb_p0_out && fb_p1_out) ? 1 : 0`.
+   - No retorno (`coop_fb_clear_end`), restaura `0x8016A40F` e, caso `fb_p0_out != fb_p1_out` (um jogador em área externa e o outro em sala interna fechada), emite 24 bytes de comandos RDP (`gDPSetFillColor(0x00010001)`, `gDPFillRectangle(0, uly, 319, lry)` e `gDPPipeSync()`) em `U32(0x801D2C80)` para preencher de preto somente a metade da tela (`Y=0..119` se P1 interno, `Y=120..239` se P2 interno) do jogador interno.
+5. **`coop_sky_update_begin` / `coop_sky_update_end` (`func_800C4EE0`)** e **`coop_sky_draw_begin` / `coop_sky_draw_end` (`func_800C4FB0`)**:
+   - Em `func_800C4EE0` (update do objeto de Céu/Nuvens criado por `func_800C52BC`): se o P1 estiver em sala interna (`out0 < 0`) e o P2 em área externa (`out1 >= 0`), redireciona temporariamente `obj + 0x20` para o slot do P2 (`U32(p1 + 0x1740)`) e `S16(p1 + 0x8E) = out1`.
+   - Em `func_800C4FB0` (draw chamado uma vez por viewport): lê o viewport atual `vp = U8(0x8016A40F) ? 1 : 0`, redireciona temporariamente `obj + 0x20` e `PLAYER_PTRS[0]` para `PLAYER_PTRS[vp]`, e ajusta `S16(p_vp + 0x8E)` para `get_outdoor_room(room, subroom)` (se `>= 0`) ou para a sala interna `room` (se `< 0`, fazendo `0x800C5008` abortar o desenho das nuvens e do Sky Dome 3D naquele viewport).
 
 ### 3.3. IA de Inimigos e Friendly Fire
 1. **`coop_enemy_begin` / `coop_enemy_end` (`func_800337A8`)**:
@@ -183,6 +192,78 @@ Esta seção documenta o mapeamento completo de engenharia reversa do motor de s
 
 ---
 
+### 3.8. Arquitetura Interna do Pipeline de Renderização de Salas, Clear do Framebuffer e Skybox/Nuvens
+
+Esta seção documenta o mapeamento completo de engenharia reversa do pipeline gráfico de salas internas/externas, limpeza do framebuffer e renderização da camada de nuvens + Sky Dome 3D obtido da ROM (`baserom.us.z64`):
+
+#### 1. Sequência de Inicialização do Frame em `func_80025F10` e a Sobrescrita de `0x8016A40F`
+- Na função principal de renderização `func_80025F10` (`0x80025F10..0x80026470`):
+  1. `0x80025F38`: chama `func_80026A10(dl, 0, 0)` para inicializar o estado do RSP/RDP e o viewport padrão `0` (tela cheia `320x240` antes do loop de viewports).
+     - Dentro de `func_80026A10` (`0x80026A10..0x80026EB4`), a instrução em **`0x80026A68`** (`sb $s1, 0xA40F($at)`, onde `$s1 = $a1 = 0` e `$at = 0x80170000`) **grava `0` em `U8(0x8016A40F)`**!
+     - **Descoberta crítica:** qualquer modificação em `U8(0x8016A40F)` feita em `coop_draw_begin` (na entrada de `func_80025F10`) era sobrescrita de volta para `0` em `0x80025F38`, **antes** de `func_80026EB8` ser chamada em `0x80025F90`.
+  2. `0x80025F90`: chama **`func_80026EB8()`** (`0x80026EB8..0x8002713C`), que limpa o Z-buffer e o framebuffer de cor da tela inteira (`0, 0` até `319, 239`).
+  3. `0x80025FA0..0x80026074`: quando `U8(0x8016A40E) & 2` (modo Split-Screen) e `U8(0x8016A40C) == 2` (`PLAYERS == 2`), executa um loop para `vp = 0` e `vp = 1`:
+     - Chama `func_80026A10(dl, vp, 1)` (que grava `U8(0x8016A40F) = vp` em `0x80026A68` e configura o `gSPViewport` e `gDPSetScissor` para a metade superior `Y=0..119` quando `vp=0` ou inferior `Y=120..239` quando `vp=1`);
+     - Chama `func_80027F90()` e `func_800280C4()`, que percorrem as listas de objetos de cena desenhando o mapa (`func_8003E614`), o objeto de Céu/Nuvens (`func_800C4FB0`), os jogadores e os inimigos no viewport atual.
+
+#### 2. Tabela de Salas (`0x801D3750`), `func_8003F53C` e o Clear do Framebuffer em `func_80026EB8`
+- A tabela de salas da fase carregada começa em **`0x801D3750`**, com entradas de **`0x58` (`88`) bytes** por sala (`room_entry = 0x801D3750 + room_id * 0x58`):
+  - `+0x10` (`0x801D3760 + room * 0x58`, `float`): altura do teto (`ceiling_y`) da sala, usada para posicionar a altura `Y` do Sky Dome.
+  - `+0x14` (`0x801D3764 + room * 0x58`, `u8`): índice de paleta de iluminação/céu da sala na tabela `0x80103DB0`.
+  - `+0x15` (`0x801D3765 + room * 0x58`, `u8`): byte de flags da sala, onde o **bit `0` (`& 1`)** indica o tipo de ambiente:
+    - **`(flags & 1) == 0`**: sala **externa (outdoor)** — possui céu aberto;
+    - **`(flags & 1) == 1`**: sala **interna (indoor)** — ambiente fechado com fundo preto.
+- Dentro de `func_80026EB8` (`0x80026EB8..0x8002713C`):
+  - Em `0x80026F68`, chama **`func_8003F53C()`** (`0x8003F53C..0x8003F5F8`), que lê o viewport ativo `vp = U8(0x8016A40F) ? 1 : 0`, carrega `room = S16(0x8016A410 + vp * 4)` e `subroom = S16(0x8016A412 + vp * 4)`, e verifica `U8(0x801D3765 + r * 0x58) & 1` tanto para `room` quanto para `subroom` (caso `subroom >= 0`, quando uma porta está aberta conectando duas salas).
+  - Se pelo menos uma das salas for externa (`(flags & 1) == 0`), `func_8003F53C()` retorna `1`; se ambas forem internas, retorna `0`.
+  - Em `0x80026F70..0x80026FC8`:
+    - Se `func_8003F53C()` retornou `1` (outdoor), `func_80026EB8` lê os 3 componentes RGB da cor do céu em **`U16(0x801B8C74)`** (R), **`U16(0x801B8C76)`** (G) e **`U16(0x801B8C78)`** (B) (atualizados por `func_8003E800` em `0x8003EA18..0x8003EA40` a partir da paleta `0x80103DB3..5`), converte para `RGBA5551` de 16 bits duplicado em 32 bits (`(c << 16) | c`) no registrador `$s5`.
+    - Se `func_8003F53C()` retornou `0` (indoor), define `$s5 = 0x00010001` (preto puro em `RGBA5551` com alpha = 1).
+  - Em `0x800270F4..0x80027110`, emite para o ponteiro global de Display List **`U32(0x801D2C80)`**:
+    - `gDPSetFillColor($s5)` (`0xF7000000, $s5`);
+    - `gDPFillRectangle(0, 0, 319, 239)` (`0xF64FC3BC, 0x00000000`);
+    - `gDPPipeSync()` (`0xE7000000, 0x00000000`).
+- **Como `coop_fb_clear_begin` / `coop_fb_clear_end` dividem o Clear do Framebuffer:**
+  - Na entrada de `func_80026EB8`, `coop_fb_clear_begin` define `U8(0x8016A40F) = (!fb_p0_out && fb_p1_out) ? 1 : 0`, garantindo que `func_80026EB8` preencha o framebuffer inteiro com a cor do céu sempre que pelo menos um jogador estiver vendo área externa.
+  - No retorno (`coop_fb_clear_end`), como o RDP ainda está em modo `G_CYC_FILL` apontando para o color framebuffer atual, quando `fb_p0_out != fb_p1_out`, o hook anexa diretamente 3 comandos Fast3DEX (24 bytes) em `U32(0x801D2C80)`:
+    1. `gDPSetFillColor(0x00010001)` (`0xF7000000, 0x00010001`);
+    2. `gDPFillRectangle(0, uly, 319, lry)` (`0xF6000000 | (319 << 14) | (lry << 2), (uly << 2)`), onde `uly=0, lry=119` quando P1 é indoor ou `uly=120, lry=239` quando P2 é indoor;
+    3. `gDPPipeSync()` (`0xE7000000, 0x00000000`).
+
+#### 3. O Objeto de Céu / Nuvens (`func_800C52BC`, Update `func_800C4EE0`, Draw `func_800C4FB0`)
+- Durante o carregamento da fase (`0x8004BF24`), a função **`func_800C52BC`** (`0x800C52BC..0x800C53B8`) aloca um único objeto de tarefa (`func_80027470(2, 4, 0x100)`) responsável por renderizar tanto a camada de nuvens 2D quanto o domo 3D do céu (Sky Dome):
+  - `obj + 0x20` (`parent`): gravado em `0x800C52E8` como `U32(U32(0x801390C0) + 0x1740)` — isto é, **sempre o objeto de tarefa do Player 1**!
+  - `obj + 0x24` (`update_fn`): **`0x800C4EE0`** (`func_800C4EE0`).
+  - `obj + 0x28` (`draw_fn`): **`0x800C4FB0`** (`func_800C4FB0`).
+  - `obj + 0x35`: `1` (flag que faz o dispatcher `func_800280C4` chamar `draw_fn` em todos os viewports ativos).
+  - `data + 0x168`: `0x01006640` (ID do modelo 3D do Sky Dome).
+- **Função de Update `func_800C4EE0` (`0x800C4EE0..0x800C4FAC`):**
+  - Lê `parent_player = U32(U32(obj + 0x20) + 0x2C)` (struct do Player 1) e `room = S16(parent_player + 0x8E)`.
+  - Copia `X` (`+0x00`) e `Z` (`+0x08`) do jogador para `data + 0x00` e `data + 0x08`, copia `ceiling_y` (`F32(0x801D3760 + room * 0x58)`) para `data + 0x04`, atualiza o offset UV das nuvens e chama `func_80028740(data)` (`0x800C4FA0`) para construir a matriz de transformação 3D (`data + 0x30`) do Sky Dome.
+  - Se o P1 estivesse em uma sala interna baixa e o P2 do lado de fora, a matriz `data + 0x30` era montada na posição e altura de teto da sala interna do P1!
+- **Função de Draw `func_800C4FB0` (`0x800C4FB0..0x800C52B8`):**
+  - Chamada uma vez para cada viewport (`vp = 0` e `vp = 1`).
+  - Em **`0x800C4FC0..0x800C5008`**, ela **ignorava completamente `U8(0x8016A40F)`**: lia sempre `parent_player = U32(U32(obj + 0x20) + 0x2C)` (Player 1) e `room = S16(parent_player + 0x8E)`, e testava:
+    ```mips
+    0x800C4FF8: addu $v0, $v0, $v1          # room * 0x58 + 0x801D0000
+    0x800C4FFC: lbu  $t6, 0x3765($v0)       # U8(0x801D3765 + room * 0x58)
+    0x800C5004: andi $t7, $t6, 0x0001       # bit 0 == indoor?
+    0x800C5008: bne  $t7, $zero, 0x800C52AC # se indoor, pula TUDO e retorna!
+    ```
+  - Caso não pulasse (`bit 0 == 0`, outdoor):
+    - `0x800C5078..0x800C5218`: desenha a camada de nuvens 2D em movimento usando a textura IA16 em `0x802B4938`;
+    - `0x800C521C..0x800C529C`: lê `p0 = U32(0x801390C0)` (que durante a renderização é sempre o P1!) e chama `func_8003E800(S16(p0 + 0x8E))` para carregar a cor/iluminação do céu daquela sala;
+    - `0x800C52A4`: chama `func_800282BC(data)` para desenhar o modelo 3D do Sky Dome (`0x01006640`).
+  - **Consequência dupla do bug original:**
+    1. Quando o P1 entrava em uma sala interna e fechava a porta enquanto o P2 ficava lá fora, `0x800C5008` via a sala interna do P1 e abortava o desenho das nuvens e do Sky Dome 3D também no viewport do P2!
+    2. Quando o P2 entrava em uma sala interna e o P1 ficava lá fora, `0x800C5008` via a sala externa do P1 e desenhava as nuvens e o Sky Dome 3D dentro da sala fechada do P2!
+- **Solução em `coop_sky_update_begin/end` (`func_800C4EE0`) e `coop_sky_draw_begin/end` (`func_800C4FB0`):**
+  - A função auxiliar `get_outdoor_room(room, subroom)` retorna `room` se `(U8(0x801D3765 + room * 0x58) & 1) == 0`, senão `subroom` se `(U8(0x801D3765 + subroom * 0x58) & 1) == 0`, ou `-1` se ambas forem internas.
+  - Em `func_800C4EE0`, se o P1 estiver interno (`out0 < 0`) e o P2 externo (`out1 >= 0`), `obj + 0x20` aponta temporariamente para o slot de objeto do P2 (`U32(p1 + 0x1740)`) com `S16(p1 + 0x8E) = out1`.
+  - Em `func_800C4FB0`, para o viewport atual `vp = U8(0x8016A40F) ? 1 : 0`, `obj + 0x20` e `PLAYER_PTRS[0]` apontam temporariamente para `p_vp = U32(PLAYER_PTRS + vp * 4)`, e `S16(p_vp + 0x8E)` recebe `out_room` (quando `>= 0`, garantindo nuvens + Sky Dome mesmo olhando para fora através de uma porta aberta) ou `room` (quando `< 0`, fazendo o `bne` em `0x800C5008` pular limpa e nativamente o desenho naquele viewport interno).
+
+---
+
 ## 4. Funções da ROM Chamadas Diretamente pelo `coop.c`
 
 | Função | Assinatura usada no `coop.c` | Uso |
@@ -203,9 +284,12 @@ Lista completa dos símbolos em [winback.us.syms.toml](file:///C:/Users/Alberto/
 | Símbolo | VRAM | Size | Papel |
 | :--- | :--- | :--- | :--- |
 | `func_80025F10` | `0x80025F10` | `0x560` | Loop de renderização do frame |
+| `func_80026EB8` | `0x80026EB8` | `0x288` | Clear do Z-buffer e do framebuffer de cor (céu vs preto) |
 | `func_80027470` | `0x80027470` | `0x168` | Alocador de objetos/tarefas |
 | `func_800337A8` | `0x800337A8` | `0xBC0` | Update de IA/visibilidade de inimigos |
 | `func_80034364` | `0x80034364` | `0x1A0` | Setup do spawner de inimigos |
+| `func_8003A054` | `0x8003A054` | `0x388` | Lock-on inicial da câmera ao apertar Y / C-Down |
+| `func_8003A6EC` | `0x8003A6EC` | `0x2A4` | Troca/ciclo de alvo de lock-on da câmera |
 | `func_8003C58C` | `0x8003C58C` | `0x5F4` | Rastreamento de sala/subsala do jogador |
 | `func_8003FCE4` | `0x8003FCE4` | `0x39C` | Colisão com caixas/pilares/portas (`0x1814`) |
 | `func_8004C438` | `0x8004C438` | `0x420` | Carregamento principal da fase |
@@ -244,5 +328,7 @@ Lista completa dos símbolos em [winback.us.syms.toml](file:///C:/Users/Alberto/
 | `func_800AB594` | `0x800AB594` | `0x3B8` | Checagem de alvo do chute corpo a corpo |
 | `func_800ABC04` | `0x800ABC04` | `0x830` | Checagem de cover na parede |
 | `func_800B876C` | `0x800B876C` | `0x500` | Atualização e colisão de projéteis |
+| `func_800C4EE0` | `0x800C4EE0` | `0xD0` | Update do objeto de Céu / Nuvens (matriz do Sky Dome) |
+| `func_800C4FB0` | `0x800C4FB0` | `0x30C` | Draw do objeto de Céu / Nuvens (nuvens 2D + Sky Dome 3D) |
 | `func_800C958C` | `0x800C958C` | `0x68` | Checagem de pickup de item solto |
 | `func_800D1E24` | `0x800D1E24` | `0x2A8` | Atualização de dados da HUD |

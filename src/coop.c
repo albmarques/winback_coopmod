@@ -241,18 +241,36 @@ static void log_status(void) {
 
 static void clear_player_targets(void);
 
-static int room_is_outdoor(int room, int subroom) {
+static int get_outdoor_room(int room, int subroom) {
     if (room < 0) {
         room = 0;
     }
     if ((U8(0x801D3765 + (unsigned int)room * 0x58) & 1) == 0) {
-        return 1;
+        return room;
     }
     if (subroom >= 0 && (U8(0x801D3765 + (unsigned int)subroom * 0x58) & 1) == 0) {
-        return 1;
+        return subroom;
     }
-    return 0;
+    return -1;
 }
+
+static int room_is_outdoor(int room, int subroom) {
+    return get_outdoor_room(room, subroom) >= 0;
+}
+
+static unsigned char fb_clear_active;
+static unsigned char fb_saved_vp;
+static int fb_p0_out;
+static int fb_p1_out;
+static unsigned int sky_upd_obj;
+static unsigned int sky_upd_saved_parent;
+static unsigned int sky_upd_player;
+static short sky_upd_saved_room;
+static unsigned int sky_draw_obj;
+static unsigned int sky_draw_saved_parent;
+static unsigned int sky_draw_saved_p0;
+static unsigned int sky_draw_player;
+static short sky_draw_saved_room;
 
 // 4. Two-view split, Engineer buffer protection, and Death Match HUD rules while drawing.
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
@@ -295,6 +313,100 @@ RECOMP_HOOK_RETURN("func_80025F10") void coop_draw_end(void) {
         U8(0x8016A4BD) = saved_a4bd;
         U8(0x8010F848) = saved_f848;
         drawing_split = 0;
+    }
+}
+
+// 4a. Per-viewport sky/black background clear and Sky Dome / Cloud rendering when one player is indoors and the other is outdoors.
+RECOMP_HOOK("func_80026EB8") void coop_fb_clear_begin(void) {
+    fb_clear_active = 0;
+    if (!coop_active()) {
+        return;
+    }
+    fb_p0_out = room_is_outdoor(S16(ROOM_STATE + 0), S16(ROOM_STATE + 2));
+    fb_p1_out = room_is_outdoor(S16(ROOM_STATE + 4), S16(ROOM_STATE + 6));
+    fb_saved_vp = U8(0x8016A40F);
+    U8(0x8016A40F) = (!fb_p0_out && fb_p1_out) ? 1 : 0;
+    fb_clear_active = 1;
+}
+
+RECOMP_HOOK_RETURN("func_80026EB8") void coop_fb_clear_end(void) {
+    if (!fb_clear_active) {
+        return;
+    }
+    U8(0x8016A40F) = fb_saved_vp;
+    fb_clear_active = 0;
+    if (fb_p0_out != fb_p1_out) {
+        unsigned int dl = U32(0x801D2C80);
+        if (dl != 0) {
+            unsigned int uly = fb_p0_out ? 120u : 0u;
+            unsigned int lry = fb_p0_out ? 239u : 119u;
+            U32(dl + 0)  = 0xF7000000u; // gDPSetFillColor
+            U32(dl + 4)  = 0x00010001u; // RGBA5551 black (0,0,0,1)
+            U32(dl + 8)  = 0xF6000000u | (319u << 14) | (lry << 2);
+            U32(dl + 12) = (uly << 2);
+            U32(dl + 16) = 0xE7000000u; // gDPPipeSync
+            U32(dl + 20) = 0u;
+            U32(0x801D2C80) = dl + 24u;
+        }
+    }
+}
+
+RECOMP_HOOK("func_800C4EE0") void coop_sky_update_begin(unsigned int obj) {
+    sky_upd_obj = 0;
+    if (!coop_active() || obj == 0) {
+        return;
+    }
+    int out0 = get_outdoor_room(S16(ROOM_STATE + 0), S16(ROOM_STATE + 2));
+    int out1 = get_outdoor_room(S16(ROOM_STATE + 4), S16(ROOM_STATE + 6));
+    int use_p1 = (out0 < 0 && out1 >= 0) ? 1 : 0;
+    int out_room = use_p1 ? out1 : out0;
+    unsigned int target_p = U32(PLAYER_PTRS + use_p1 * 4);
+    if (target_p != 0 && out_room >= 0) {
+        sky_upd_obj = obj;
+        sky_upd_saved_parent = U32(obj + 0x20);
+        sky_upd_player = target_p;
+        sky_upd_saved_room = S16(target_p + 0x8E);
+        U32(obj + 0x20) = U32(target_p + 0x1740);
+        S16(target_p + 0x8E) = (short)out_room;
+    }
+}
+
+RECOMP_HOOK_RETURN("func_800C4EE0") void coop_sky_update_end(void) {
+    if (sky_upd_obj != 0) {
+        U32(sky_upd_obj + 0x20) = sky_upd_saved_parent;
+        S16(sky_upd_player + 0x8E) = sky_upd_saved_room;
+        sky_upd_obj = 0;
+    }
+}
+
+RECOMP_HOOK("func_800C4FB0") void coop_sky_draw_begin(unsigned int obj) {
+    sky_draw_obj = 0;
+    if (!coop_active() || obj == 0) {
+        return;
+    }
+    int vp = U8(0x8016A40F) ? 1 : 0;
+    short room = S16(ROOM_STATE + vp * 4);
+    short subroom = S16(ROOM_STATE + vp * 4 + 2);
+    int out_room = get_outdoor_room(room, subroom);
+    unsigned int p_vp = U32(PLAYER_PTRS + vp * 4);
+    if (p_vp != 0) {
+        sky_draw_obj = obj;
+        sky_draw_saved_parent = U32(obj + 0x20);
+        sky_draw_saved_p0 = U32(PLAYER_PTRS);
+        sky_draw_player = p_vp;
+        sky_draw_saved_room = S16(p_vp + 0x8E);
+        U32(obj + 0x20) = U32(p_vp + 0x1740);
+        U32(PLAYER_PTRS) = p_vp;
+        S16(p_vp + 0x8E) = (out_room >= 0) ? (short)out_room : (room >= 0 ? room : 0);
+    }
+}
+
+RECOMP_HOOK_RETURN("func_800C4FB0") void coop_sky_draw_end(void) {
+    if (sky_draw_obj != 0) {
+        U32(sky_draw_obj + 0x20) = sky_draw_saved_parent;
+        U32(PLAYER_PTRS) = sky_draw_saved_p0;
+        S16(sky_draw_player + 0x8E) = sky_draw_saved_room;
+        sky_draw_obj = 0;
     }
 }
 
