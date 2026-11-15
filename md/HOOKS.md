@@ -423,3 +423,11 @@ Lista completa dos símbolos em [winback.us.syms.toml](file:///C:/Users/Alberto/
 | `func_800C958C` | `0x800C958C` | `0x68` | Checagem de pickup de item solto |
 | `func_800CF6A8` | `0x800CF6A8` | `0xC4` | Desenho da barra de vida (`LIFE`) do jogador |
 | `func_800D1E24` | `0x800D1E24` | `0x2A8` | Atualização de dados da HUD |
+
+
+### 3.18 Sky Dome por viewport (`func_800C4FB0` / `func_800282BC`) e armadilhas da escada
+
+- **Sky Dome seguia só o Jean-Luc:** `func_800C4EE0` roda 1x por frame (antes do loop de viewports) e grava `X/Y/Z` do domo em `sky_data+0x00/04/08` e a matriz float 3x4 em `sky_data+0x30` (`func_80028740`). `func_800C4FB0` roda 1x por viewport e chama `func_800282BC`, que converte `sky_data+0x30` para `Mtx` N64 em **`sky_data+0x60`** (buffer único) e emite `gSPMatrix` (`0xDA380003`, ptr) + `gSPDisplayList` (`sky_data+0x168`). Como a DL só executa depois dos dois viewports, o último a escrever vencia.
+- **Correção (`coop_sky_draw_begin/end`):** no begin, se `out_room >= 0`, salva `sky_data+0x24/+0x28` (UV das nuvens), chama `func_800C4EE0(obj)` (o hook de update ignora enquanto `sky_draw_obj != 0`) e restaura os UVs. No end, se `U32(dl-16)==0xDA380003 && U32(dl-12)==sky_data+0x60`, copia os 64 bytes para `SKY_MTX_P1=0x80500080` / `SKY_MTX_P2=0x805000C0` e reescreve o ponteiro em `dl-12`.
+- **Pendente:** com o P1 andando, o céu do P2 ainda pode parecer mais rápido (causa não identificada; salvar o UV como `u32` não ajudou e foi revertido).
+- **Escada com Engineer:** NÃO bloquear o reset de `SLOT1_DATA` (`0x16EC/0x16F0/0x88/0xF4`) em `coop_cutscene_mode_end` nem o reset do outro jogador em `coop_cutscene_mode_begin` quando a ação for 23/25/12/13: o protagonista da escada ainda está nessa ação no fim e ficava preso (animação cancelada, personagem "voando"). O código deve permanecer como no commit `a5a2b42`.

@@ -39,6 +39,7 @@ extern void func_8004D6E8(unsigned int player, int slot);
 extern void func_8006B374(unsigned int player);
 extern void func_8006B3B8(unsigned int player);
 extern void func_8006B564(unsigned int player);
+extern void func_800C4EE0(unsigned int obj);
 
 static int spawn_calls;
 static unsigned char drawing_split;
@@ -259,6 +260,9 @@ static int room_is_outdoor(int room, int subroom) {
     return get_outdoor_room(room, subroom) >= 0;
 }
 
+#define SKY_MTX_P1  0x80500080u // 64-byte N64 Mtx for Viewport 0 Sky Dome
+#define SKY_MTX_P2  0x805000C0u // 64-byte N64 Mtx for Viewport 1 Sky Dome
+
 static unsigned char fb_clear_active;
 static unsigned char fb_saved_vp;
 static int fb_p0_out;
@@ -268,6 +272,7 @@ static unsigned int sky_upd_saved_parent;
 static unsigned int sky_upd_player;
 static short sky_upd_saved_room;
 static unsigned int sky_draw_obj;
+static int sky_draw_vp;
 static unsigned int sky_draw_saved_parent;
 static unsigned int sky_draw_saved_p0;
 static unsigned int sky_draw_player;
@@ -354,7 +359,7 @@ RECOMP_HOOK_RETURN("func_80026EB8") void coop_fb_clear_end(void) {
 
 RECOMP_HOOK("func_800C4EE0") void coop_sky_update_begin(unsigned int obj) {
     sky_upd_obj = 0;
-    if (!coop_active() || obj == 0) {
+    if (!coop_active() || obj == 0 || sky_draw_obj != 0) {
         return;
     }
     int out0 = get_outdoor_room(S16(ROOM_STATE + 0), S16(ROOM_STATE + 2));
@@ -392,6 +397,7 @@ RECOMP_HOOK("func_800C4FB0") void coop_sky_draw_begin(unsigned int obj) {
     unsigned int p_vp = U32(PLAYER_PTRS + vp * 4);
     if (p_vp != 0) {
         sky_draw_obj = obj;
+        sky_draw_vp = vp;
         sky_draw_saved_parent = U32(obj + 0x20);
         sky_draw_saved_p0 = U32(PLAYER_PTRS);
         sky_draw_player = p_vp;
@@ -399,11 +405,30 @@ RECOMP_HOOK("func_800C4FB0") void coop_sky_draw_begin(unsigned int obj) {
         U32(obj + 0x20) = U32(p_vp + 0x1740);
         U32(PLAYER_PTRS) = p_vp;
         S16(p_vp + 0x8E) = (out_room >= 0) ? (short)out_room : (room >= 0 ? room : 0);
+        if (out_room >= 0) {
+            unsigned int sky_data = U32(obj + 0x2C);
+            if (sky_data != 0) {
+                float saved_u = F32(sky_data + 0x24);
+                float saved_v = F32(sky_data + 0x28);
+                func_800C4EE0(obj);
+                F32(sky_data + 0x24) = saved_u;
+                F32(sky_data + 0x28) = saved_v;
+            }
+        }
     }
 }
 
 RECOMP_HOOK_RETURN("func_800C4FB0") void coop_sky_draw_end(void) {
     if (sky_draw_obj != 0) {
+        unsigned int dl = U32(0x801D2C80);
+        unsigned int sky_data = U32(sky_draw_obj + 0x2C);
+        if (dl != 0 && sky_data != 0 && U32(dl - 16) == 0xDA380003u && U32(dl - 12) == sky_data + 0x60) {
+            unsigned int dst_mtx = sky_draw_vp ? SKY_MTX_P2 : SKY_MTX_P1;
+            for (int i = 0; i < 16; i++) {
+                U32(dst_mtx + i * 4) = U32(sky_data + 0x60 + i * 4);
+            }
+            U32(dl - 12) = dst_mtx;
+        }
         U32(sky_draw_obj + 0x20) = sky_draw_saved_parent;
         U32(PLAYER_PTRS) = sky_draw_saved_p0;
         S16(sky_draw_player + 0x8E) = sky_draw_saved_room;
