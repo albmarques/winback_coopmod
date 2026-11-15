@@ -52,6 +52,8 @@ static unsigned char bullet_split;
 static unsigned char damage_story_mode;
 static unsigned int lock_other_player;
 static unsigned short lock_saved_in_use;
+static unsigned int cam_other_player;
+static unsigned int cam_saved_fc;
 static unsigned int last_log;
 
 // Cover, item pickup, and cutscene state:
@@ -222,6 +224,8 @@ static void log_status(void) {
     winback_mod_log(line);
 }
 
+static void clear_player_targets(void);
+
 // 4. Two-view split, Engineer buffer protection, and Death Match HUD rules while drawing.
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     drawing_split = 0;
@@ -247,6 +251,7 @@ RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
         U8(0x8010F848) = 0x10;
         U8(0x8010F844) = 0;
         U8(0x8010F845) = 0;
+        clear_player_targets();
         drawing_split = 1;
     }
 }
@@ -429,7 +434,95 @@ RECOMP_HOOK_RETURN("func_80057BB4") void coop_damage_end(void) {
     }
 }
 
-// 7c. Prevent auto-aim lock-on from targeting the other player.
+// 7c. Prevent auto-aim and manual lock-on from targeting the other player.
+static void clear_player_targets(void) {
+    if (!coop_active()) {
+        return;
+    }
+    unsigned int p0 = U32(PLAYER_PTRS);
+    unsigned int p1 = U32(PLAYER_PTRS + 4);
+    if (p0 == 0 || p1 == 0) {
+        return;
+    }
+    if (U32(0x80138EF8) == p1) {
+        U32(0x80138EF8) = 0;
+        if (recomp_get_config_u32("log") != 0) winback_mod_log("coop: cleared 8EF8[0]=p1");
+    }
+    if (U32(0x80138EF8 + 4) == p0) {
+        U32(0x80138EF8 + 4) = 0;
+        if (recomp_get_config_u32("log") != 0) winback_mod_log("coop: cleared 8EF8[1]=p0");
+    }
+    if (U32(0x80188C38) == p1) {
+        U32(0x80188C38) = 0;
+        if (recomp_get_config_u32("log") != 0) winback_mod_log("coop: cleared 8C38[0]=p1");
+    }
+    if (U32(0x80188C38 + 4) == p0) {
+        U32(0x80188C38 + 4) = 0;
+        if (recomp_get_config_u32("log") != 0) winback_mod_log("coop: cleared 8C38[1]=p0");
+    }
+    if (U32(0x801C3690) == p1) {
+        U32(0x801C3690) = 0;
+    }
+    if (U32(0x801C3690 + 4) == p0) {
+        U32(0x801C3690 + 4) = 0;
+    }
+    unsigned int cam0 = U32(CAM_PTRS);
+    unsigned int cam1 = U32(CAM_PTRS + 4);
+    if (cam0 != 0 && U32(cam0 + 0x164) == p1) {
+        U32(cam0 + 0x164) = 0;
+    }
+    if (cam1 != 0 && U32(cam1 + 0x164) == p0) {
+        U32(cam1 + 0x164) = 0;
+    }
+}
+
+static void cam_target_hide_other(unsigned int cam_obj) {
+    cam_other_player = 0;
+    if (!coop_active() || cam_obj == 0) {
+        return;
+    }
+    unsigned int owner = U32(cam_obj + 0x20);
+    unsigned int p0 = U32(PLAYER_PTRS);
+    unsigned int p1 = U32(PLAYER_PTRS + 4);
+    unsigned int other = 0;
+    if (owner != 0 && p0 != 0 && p1 != 0) {
+        if (owner == U32(p0 + 0x1740)) {
+            other = p1;
+        } else if (owner == U32(p1 + 0x1740)) {
+            other = p0;
+        }
+    }
+    if (other != 0) {
+        cam_other_player = other;
+        cam_saved_fc = U32(other + 0xFC);
+        U32(other + 0xFC) = 0;
+    }
+}
+
+static void cam_target_restore_other(void) {
+    if (cam_other_player != 0) {
+        U32(cam_other_player + 0xFC) = cam_saved_fc;
+        cam_other_player = 0;
+    }
+    clear_player_targets();
+}
+
+RECOMP_HOOK("func_8003A054") void coop_cam_lock_begin(unsigned int cam_obj) {
+    cam_target_hide_other(cam_obj);
+}
+
+RECOMP_HOOK_RETURN("func_8003A054") void coop_cam_lock_end(void) {
+    cam_target_restore_other();
+}
+
+RECOMP_HOOK("func_8003A6EC") void coop_cam_cycle_begin(unsigned int cam_obj) {
+    cam_target_hide_other(cam_obj);
+}
+
+RECOMP_HOOK_RETURN("func_8003A6EC") void coop_cam_cycle_end(void) {
+    cam_target_restore_other();
+}
+
 RECOMP_HOOK("func_80058438") void coop_lockon_begin(unsigned int player) {
     lock_other_player = 0;
     if (!coop_active()) {
@@ -450,6 +543,7 @@ RECOMP_HOOK_RETURN("func_80058438") void coop_lockon_end(void) {
         U16(lock_other_player + 0x92) = lock_saved_in_use;
         lock_other_player = 0;
     }
+    clear_player_targets();
 }
 
 // 8. Wall cover, box/crate/door collision for P2, and non-lethal friendly kick.
@@ -494,9 +588,10 @@ RECOMP_HOOK_RETURN("func_8003FCE4") void coop_box_col_end(void) {
     }
 }
 
+// Prevent Y-button / melee lock-on from targeting the other player.
 RECOMP_HOOK("func_800AB594") void coop_kick_begin(unsigned int player) {
     kick_other_player = 0;
-    if (!coop_active() || recomp_get_config_u32("friendly_fire") == 0) {
+    if (!coop_active()) {
         return;
     }
     unsigned int p0 = U32(PLAYER_PTRS);
@@ -514,6 +609,7 @@ RECOMP_HOOK_RETURN("func_800AB594") void coop_kick_end(void) {
         U16(kick_other_player + 0x92) = kick_saved_in_use;
         kick_other_player = 0;
     }
+    clear_player_targets();
 }
 
 // 9. Item pickup for Player 2 and item popup dismissal.
