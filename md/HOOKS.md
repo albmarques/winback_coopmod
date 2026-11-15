@@ -36,10 +36,10 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 | `func_800A8620` | `0x800A8620` (`0x1C0`) | `HOOK` / `HOOK_RETURN` | `coop_enemy_item_begin` / `coop_enemy_item_end` | Permite que o P2 pegue itens dropados por inimigos via `should_p2_pick_item()`. |
 | `func_800A8B10` | `0x800A8B10` (`0x114`) | `HOOK` / `HOOK_RETURN` | `coop_a8b10_begin` / `coop_a8b10_end` | Salva o argumento `player` e restaura os buffers/modelo Engineer (`0x3A`) no `SLOT1_DATA` após chamadas internas do jogo (inclusive em cutscenes). |
 | `func_8004DE48` | `0x8004DE48` (`0x10C`) | `HOOK` | `coop_event_push` | Detecta qual jogador (`SLOT0_DATA` ou `SLOT1_DATA`) disparou um gatilho/interação (`type == 1`) e atualiza `trigger_player` + `trigger_ttl`. |
-| `func_800944E0` | `0x800944E0` (`0x248`) | `HOOK` / `HOOK_RETURN` | `coop_event_mgr_begin` / `coop_event_mgr_end` | Faz merge temporário dos botões do P2 (`0x80187FB2` / `0x80187FC2`) nos do P1 quando ambos têm `0x16EC < 2` (popups/skip) e decrementa `trigger_ttl` fora de cutscenes. |
-| `func_8009C2E4` | `0x8009C2E4` (`0x348`) | `HOOK` / `HOOK_RETURN` | `coop_event_dispatch_begin` / `coop_event_dispatch_end` | Define `0x18CC` do protagonista (`set_protagonist(trigger_player)`) e troca `PLAYER_PTRS`/`CAM_PTRS`/`ROOM_STATE` se `trigger_player == 1` antes de despachar eventos de fase. |
+| `func_800944E0` | `0x800944E0` (`0x248`) | `HOOK` / `HOOK_RETURN` | `coop_event_mgr_begin` / `coop_event_mgr_end` | Detecta a flag de morte `DEATH_FLAG` (`0x8010E0FA`) antes de `func_8009CBB0` para definir o jogador morto como protagonista da cutscene de morte; faz merge temporário dos botões do P2 nos do P1 quando ambos têm `0x16EC < 2` (popups/skip) e decrementa `trigger_ttl`. |
+| `func_8009C2E4` | `0x8009C2E4` (`0x348`) | `HOOK` / `HOOK_RETURN` | `coop_event_dispatch_begin` / `coop_event_dispatch_end` | Define `0x18CC` do protagonista (`set_protagonist(trigger_player)`) e troca `PLAYER_PTRS`/`CAM_PTRS`/`ROOM_STATE` + floats de câmera se `trigger_player == 1` antes de despachar eventos de fase. |
 | `func_8009BE18` | `0x8009BE18` (`0x204`) | `HOOK` / `HOOK_RETURN` | `coop_script_run_begin` / `coop_script_run_end` | Garante que durante `in_cutscene` com `cutscene_protagonist == 1` os ponteiros continuem apontando para o P2 como protagonista do script. |
-| `func_8009E1E0` | `0x8009E1E0` (`0x818`) | `HOOK` / `HOOK_RETURN` | `coop_cutscene_mode_begin` / `coop_cutscene_mode_end` | Na entrada da cutscene (`mode == 0`), fixa `cutscene_protagonist`, para o movimento do outro jogador e ativa `in_cutscene = 1`. Na saída (`mode == 1`), restaura ordem P1/P2 e reseta o estado. |
+| `func_8009E1E0` | `0x8009E1E0` (`0x818`) | `HOOK` / `HOOK_RETURN` | `coop_cutscene_mode_begin` / `coop_cutscene_mode_end` | Na entrada da cutscene (`mode == 1` ou `mode == 3`), fixa `cutscene_protagonist`, para o movimento do outro jogador (`U8(other + 0x16F0) = 1`) e ativa `in_cutscene = 1`. Na saída (`mode == 0` ou `mode == 2`), restaura ordem P1/P2 e reseta o estado. |
 | `func_80098F20` | `0x80098F20` (`0x150`) | `HOOK` / `HOOK_RETURN` | `coop_cutscene_teleport_begin` / `coop_cutscene_teleport_end` | Quando uma cutscene reposiciona/teleporta um jogador no meio da fase, move o parceiro junto (`X + spawn_offset`, `Y`, `Z`, ângulo, polígono `0x8A` e sala `0x8E`). |
 
 ---
@@ -96,15 +96,90 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 ### 3.6. Cutscenes e Protagonista Dinâmico
 1. **`coop_event_push` (`func_8004DE48`)**:
    - Em `func_8004DE48(type, sub, val, obj)`, se `type == 1 && obj != 0`, verifica `U32(obj + 0x2C)` para gravar `trigger_player = 0` (`SLOT0_DATA`) ou `1` (`SLOT1_DATA`, com `trigger_ttl = 180` frames decrementado em `coop_event_mgr_end`). Isso cobre tanto linhas de gatilho quanto interações de botão Ação (que chamam `func_8004DE48(1, ..., s1)` em `0x800A9868`).
-2. **`coop_event_dispatch_*` (`func_8009C2E4`)** e **`coop_script_run_*` (`func_8009BE18`)**:
-   - Aplicam `set_protagonist(trigger_player)` (`0x18CC = 0xFF` no protagonista e `0xFE` no outro) e mantêm `PLAYER_PTRS`, `CAM_PTRS` e `ROOM_STATE` trocados enquanto `trigger_player == 1` ou `in_cutscene && cutscene_protagonist == 1`.
-3. **`coop_cutscene_mode_*` (`func_8009E1E0`)**:
-   - Em `mode == 0` (início): trava `cutscene_protagonist = trigger_player`, para o movimento do outro jogador (`0x0154 = 0`, `0x0158 = 0`, `0x16EC = 0`, `0x16F0 = 1`) e liga `in_cutscene = 1`.
-   - Em `mode == 1` (fim): restaura `ensure_normal_player_order()`, `set_protagonist(0)`, `cutscene_protagonist = 0`, `trigger_player = 0`, `in_cutscene = 0`.
-4. **`coop_cutscene_teleport_*` (`func_80098F20`)**:
+2. **`coop_event_mgr_begin` / `coop_event_mgr_end` (`func_800944E0`)**:
+   - Verifica `U8(DEATH_FLAG) != 0` (`0x8010E0FA`) logo na entrada, antes de `func_800944E0` limpar a flag e chamar `func_8009CBB0()`. Se `S8(SLOT1_DATA + 0x176B) <= 0 && S8(SLOT0_DATA + 0x176B) > 0`, define `cutscene_protagonist = 1`, `trigger_player = 1`, `set_protagonist(1)`, chama `swap_all_player_state()` e liga `in_cutscene = 1`.
+3. **`coop_event_dispatch_*` (`func_8009C2E4`)** e **`coop_script_run_*` (`func_8009BE18`)**:
+   - Aplicam `set_protagonist(trigger_player)` (`0x18CC = 0xFF` no protagonista e `0xFE` no outro) e mantêm `PLAYER_PTRS`, `CAM_PTRS`, `ROOM_STATE` e os 6 pares de floats de câmera (`0x8016D6D8`, `0x801B0CE8`, `0x80188FB0`, `0x80168748`, `0x8016D268`, `0x801C3808`) trocados enquanto `trigger_player == 1` ou `in_cutscene && cutscene_protagonist == 1`.
+4. **`coop_cutscene_mode_*` (`func_8009E1E0`)**:
+   - Em `mode == 1 || mode == 3` (início de cutscene normal ou cutscene de morte): garante `trigger_player = 1` caso `SLOT1_DATA` esteja morto (`HP <= 0`), trava `cutscene_protagonist = trigger_player`, para o movimento do outro jogador (`0x0154 = 0`, `0x0158 = 0`, `U16(0x16EC) = 0`, `U8(0x16F0) = 1`), executa `swap_all_player_state()` se `cutscene_protagonist == 1` e liga `in_cutscene = 1`.
+   - Em `mode == 0 || mode == 2` (fim de cutscene normal ou fim da cutscene de morte): restaura `ensure_normal_player_order()`, `set_protagonist(0)`, `cutscene_protagonist = 0`, `trigger_player = 0`, `trigger_ttl = 0` e `in_cutscene = 0`.
+   - Em `coop_draw_begin` (`func_80025F10`), antes de `if (coop_active())`, há também um fallback defensivo que limpa `in_cutscene` e restaura a ordem normal se `(U16(STATE) & 1)` estiver ativo e `CUTSCENE_FLAG == 0`, `CUTSCENE_CAM == 0` e `(U16(SCRIPT_FLAGS) & 0x0010) == 0`.
+5. **`coop_cutscene_teleport_*` (`func_80098F20`)**:
    - Copia `X + spawn_offset`, `Y`, `Z`, ângulo (`0x64`), polígono (`0x8A`) e sala (`0x8E`) de `PLAYER_PTRS[tele_idx]` para `PLAYER_PTRS[1 - tele_idx]`.
-5. **`coop_a8b10_*` (`func_800A8B10`)**:
+6. **`coop_a8b10_*` (`func_800A8B10`)**:
    - Restaura os buffers do Engineer no `SLOT1_DATA` sempre que `func_800A8B10` rodar para o Player 2 (incluindo transições de cutscene).
+
+---
+
+### 3.7. Arquitetura Interna do Motor de Scripts, Cutscenes e Sequência de Morte (`ROM 0x9315CC`)
+
+Esta seção documenta o mapeamento completo de engenharia reversa do motor de scripts e cutscenes obtido direto da ROM (`baserom.us.z64`, onde `rom_offset = vram - 0x80024C00`):
+
+#### 1. Detecção de Morte e Armadilha de Sign-Extension em MIPS (`0x8010E0FA`)
+- Na função de update do jogador `func_80059E5C` (`0x8005A0D0..0x8005A170`):
+  - Quando `U8(0x8016A40E) & 1` (modo Story) e `S8(slot + 0x176B) <= 0` (HP zerado):
+    - `0x8005A154`: chama `func_8006208C(slot)` (verifica se há respawn de modo especial em `func_800DD8CC`; no modo Story normal retorna `0`).
+    - `0x8005A160`: grava `U16(slot + 0x16EC) = 22` (`0x16`, estado de morte).
+    - `0x8005A164`: grava `U8(slot + 0x176B) = 0`.
+    - `0x8005A168`: chama `func_8009CBA0` (`0x8009CBA0`), que executa:
+      ```mips
+      0x8009CBA0: addiu $v0, $zero, 1
+      0x8009CBA4: lui   $at, 0x8011
+      0x8009CBA8: jr    $ra
+      0x8009CBAC: sb    $v0, 0xE0FA($at)
+      ```
+  - **Atenção ao cálculo de endereço MIPS:** instruções de load/store tratam o offset imediato de 16 bits como **signed** (`int16_t`). Como `0xE0FA` tem o bit 15 ligado (`0xE0FA = -7942 = -0x1F06`), o endereço efetivo é `0x80110000 - 0x1F06 = 0x8010E0FA` (e **não** `0x8011E0FA`). O mesmo vale para:
+    - `CUTSCENE_FLAG`: `lui 0x8011` + `0xEDE4` (`-4636`) = **`0x8010EDE4`**
+    - `SCRIPT_FLAGS`: `lui 0x8011` + `0xE0F4` (`-7948`) = **`0x8010E0F4`**
+    - `DEATH_FLAG`: `lui 0x8011` + `0xE0FA` (`-7942`) = **`0x8010E0FA`**
+    - `PLAYER_PTRS`: `lui 0x8014` + `0x90C0` (`-28480`) = **`0x801390C0`**
+    - `CAM_PTRS`: `lui 0x8018` + `0x9280` (`-28032`) = **`0x80179280`**
+    - `SLOT0_DATA`: `lui 0x8018` + `0x9350` (`-27824`) = **`0x80179350`**
+
+#### 2. Carregamento e Disparo do Script Global de Morte (`func_800944E0` $\rightarrow$ `func_8009CBB0`)
+- Em `func_800944E0` (`0x80094534..0x80094568`), quando `(U16(STATE) & 9) != 0` e `U8(0x8010E0FA) != 0`:
+  - Se `U16(STATE) & 1`, zera `U8(0x8010E0FA) = 0` e chama `func_8009CBB0()` (`0x8009CBB0`).
+- `func_8009CBB0()` executa 4 chamadas em sequência:
+  1. `func_800941C8(8)`: toca a música (BGM `8`) de morte / Game Over.
+  2. `func_800996B0(0x7F)`: como o argumento é `0x7F` (`127`), carrega o **arquivo de script global `0`** a partir da tabela de arquivos em ROM `0x931470` (`offset = *(u32*)(0x931470 + 8) = 0x15C` $\rightarrow$ **`ROM 0x9315CC`**) para o buffer de scripts em RAM `0x8020A800` (gravando o ponteiro em `*(u32*)0x8010E0F0`).
+  3. `s = func_8009C050(33, 0)`: busca na tabela carregada o script correspondente ao evento `33` (`0x21`, morte).
+  4. `func_8009BE18(s, 0)`: inicia a execução do bytecode do script de morte.
+
+#### 3. Estrutura da VM de Bytecode de Scripts (`func_8009C62C` e Tabela `0x80119630`)
+- O interpretador de bytecode `func_8009C62C` (`0x8009C62C..0x8009C700`) lê comandos de tamanho variável a partir do ponteiro atual de script (`*(u32*)0x8010E0FC`), onde o 1º byte é o `opcode` (`0x00..0x2B`), e despacha via tabela de 44 entradas (8 bytes por entrada: `{ u32 handler_vram, u8 num_args, ... }`) em **`0x80119630`** (`ROM 0xF4A30`).
+- Os argumentos de cada instrução são lidos como `s16` big-endian desalinhados (`lbu hi, lbu lo`) e empilhados nos registradores `$a0..$a3` e stack `0x10($sp)..0x20($sp)`.
+- **Bytecode decodificado do Script Global de Morte (`ROM 0x9315CC`, Script 0 / Script 3):**
+  1. `op=0x08 (handler 0x8009AF00) args=[3]` $\rightarrow$ chama **`func_8009E1E0(3)`** (entra em modo cutscene in-game `3`).
+  2. `op=0x24 (handler 0x8009B990) args=[0, 0, 999, 6, 1072]` $\rightarrow$ chama **`func_8009CC10(0.0f, 0.0f, 999.0f, 6, 1072)`** (agenda a animação de morte `1072` = `0x430` no jogador `PLAYER_PTRS[0]`).
+  3. `op=0x12 (handler 0x8009B30C) args=[1]` $\rightarrow$ chama **`func_800A0DC8(1)`** (inicializa a câmera de cutscene `1` copiando os 6 floats de `0x8016D6D8`, `0x801B0CE8`, `0x80188FB0`, `0x80168748`, `0x8016D268`, `0x801C3808`).
+  4. `op=0x18 (handler 0x8009B4BC) args=[0, 1, 6, 255, 200, 180, 200, 0]` $\rightarrow$ chama **`func_8009D7F8`** (posiciona o Eye da câmera `1` em offset `(200, 180, 200)` relativo ao ator `255` = `0xFF`).
+  5. `op=0x18 (handler 0x8009B4BC) args=[1, 1, 24, 255, 0, 150, 0, 0]` $\rightarrow$ chama **`func_8009DAD8`** (posiciona o LookAt da câmera `1` em offset `(0, 150, 0)` relativo ao ator `255` = `0xFF`).
+  6. `op=0x16 (handler 0x8009B3E8) args=[0]` $\rightarrow$ configuração de câmera/transição.
+  7. `op=0x11 (handler 0x8009B2FC) args=[1]` $\rightarrow$ chama **`func_8009E9F8(1)`** (ativa a câmera de cutscene `1`, gravando `U8(0x8010EDE5) = 1`).
+  8. `op=0x18 (handler 0x8009B4BC) args=[2, 1, 0, 255, -150, 240, 80, 3000]` $\rightarrow$ chama **`func_8009DE54`** (orbita a câmera `1` ao redor do ator `0xFF` durante `3000` ms).
+  9. `op=0x05 (handler 0x8009AE18) args=[2900]` $\rightarrow$ aguarda `2900` ms (~96 frames), cedendo execução frame a frame para `func_800944E0` continuar via `func_8009BE18(0, 1)`.
+  10. `op=0x06 (handler 0x8009AE40) args=[0, 1, 1000]` e `op=0x05 args=[1000]` $\rightarrow$ aplica fade-out de `1000` ms e aguarda concluir.
+  11. `op=0x13 (handler 0x8009B31C) args=[1]` $\rightarrow$ encerra a câmera de cutscene `1`.
+  12. `op=0x08 (handler 0x8009AF00) args=[5]` $\rightarrow$ chama **`func_800DD388(0)`** (prepara estado de fim de vida / Continue).
+  13. `op=0x08 (handler 0x8009AF00) args=[2]` $\rightarrow$ chama **`func_8009E1E0(2)`** (transição final para tela de Game Over / Continue via `func_8008EF18`).
+
+#### 4. Os 4 Modos de `func_8009E1E0(int mode)` (`0x8009E1E0..0x8009E9F0`)
+- **`mode == 0` (`0x8009E230`)**: Sai de uma cutscene normal de volta para o gameplay (`U16(STATE) |= 1`, `U16(STATE) &= ~8`, `U8(0x8010EDE4) = 0`).
+- **`mode == 1` (`0x8009E388`)**: Entra em cutscene de história padrão (`U16(STATE) &= ~1`, `U16(STATE) |= 8`, copia os 6 floats de câmera de `0x8016D6D8+` e prepara `PLAYER_PTRS[0]`).
+- **`mode == 2` (`0x8009E344` / `0x8009AF38`)**: Encerra a sequência de morte / fim de partida chamando `func_8008EF18`.
+- **`mode == 3` (`0x8009E72C`)**: Entra em cutscene in-game mantendo `STATE & 1` ativo, mas gravando **`U8(0x8010EDE4) = 1`** (`CUTSCENE_FLAG`) e **`U8(0x8011F784) = 1`** (`CUTSCENE_CAM`), copiando os 6 floats de câmera (`0x8016D6D8+`) e resetando `PLAYER_PTRS[0]->0x16EC = 0`, `0x18D1 = 0` e `0x18D2 = 0`.
+
+#### 5. Como o Jogador Executa a Animação de Morte `1072` (`0x430`) Durante `CUTSCENE_FLAG == 1`
+- Na função de tick do objeto do jogador `func_80058360` (`0x800583C8..0x80058424`):
+  - Se `U8(0x8010EDE4) != 0` (`CUTSCENE_FLAG == 1`) e `U8(MODE) & 1 != 0`, o jogo **não** chama `func_80059E5C`; em vez disso, chama **`func_800CB660(obj)`** (`0x800CB660`).
+- Dentro de `func_800CB660(obj)`:
+  - Lê `slot = U32(obj + 0x2C)` e `cmd = U8(slot + 0x18CE)`.
+  - Quando `func_8009CC10` (`0x8009CC10`) é chamada pelo `op=0x24 args=[0, 0, 999, 6, 1072]`, ela verifica se `U8(PLAYER_PTRS[0] + 0x18CD) == 0` e grava em `PLAYER_PTRS[0]`:
+    - `U8(slot + 0x18CE) = 6`
+    - `F32(slot + 0x18DC) = 999.0f`
+    - `F32(slot + 0x18E0) = 1072.0f` (`0x430`)
+  - No dispatch de `func_800CB660` (`tabela 0x8011B420`), o caso `6` (`0x800CBA08`) chama **`func_800CC57C(slot)`** (`0x800CC57C`), que converte `F32(slot + 0x18E0)` para inteiro (`1072 = 0x430`) e grava `U16(slot + 0x16E0) = 0x430` e `U16(slot + 0x16E2) = 0x430` (a animação de queda/morte).
+  - Em seguida (`0x800CBA1C..0x800CBA50`), `func_800CB660` usa `U8(slot + 0x16F5)` (`model_id`, `0x3A` no Engineer) na tabela `0x80109540`, chama `func_800532CC(slot)` (avanço da animação), `func_80069D44(slot)` (matrizes de ossos) e, como `model_id >= 0x22`, chama `func_8006B564(slot)` (skinning das juntas dinâmicas).
 
 ---
 

@@ -30,6 +30,7 @@
 #define CUTSCENE_FLAG 0x8010EDE4 // u8: non-zero during mid-stage cutscene (mode 3)
 #define CUTSCENE_CAM  0x8011F784 // u8: non-zero when cutscene camera/actor is active
 #define SCRIPT_FLAGS  0x8010E0F4 // u16: bit 4 (0x0010) set while a stage script/cutscene runs
+#define DEATH_FLAG    0x8010E0FA // u8: set to 1 by func_8009CBA0 when a player dies
 
 // Base game functions resolved via relocations:
 extern unsigned int func_80027470(int list, int group, int size);
@@ -58,6 +59,7 @@ static unsigned int last_log;
 
 // Cover, item pickup, and cutscene state:
 static unsigned char cover_split;
+static unsigned char room_split;
 static unsigned char box_room_swapped;
 static unsigned int kick_other_player;
 static unsigned short kick_saved_in_use;
@@ -97,12 +99,25 @@ static void swap_player_ptrs_and_rooms(void) {
     U32(ROOM_STATE + 4) = r0;
 }
 
+static void swap_f32_pair(unsigned int addr) {
+    float a = F32(addr);
+    float b = F32(addr + 4);
+    F32(addr) = b;
+    F32(addr + 4) = a;
+}
+
 static void swap_all_player_state(void) {
     swap_player_ptrs_and_rooms();
     unsigned int c0 = U32(CAM_PTRS);
     unsigned int c1 = U32(CAM_PTRS + 4);
     U32(CAM_PTRS) = c1;
     U32(CAM_PTRS + 4) = c0;
+    swap_f32_pair(0x8016D6D8); // Camera Eye X
+    swap_f32_pair(0x801B0CE8); // Camera Eye Y
+    swap_f32_pair(0x80188FB0); // Camera Eye Z
+    swap_f32_pair(0x80168748); // Camera LookAt X
+    swap_f32_pair(0x8016D268); // Camera LookAt Y
+    swap_f32_pair(0x801C3808); // Camera LookAt Z
 }
 
 static void ensure_normal_player_order(void) {
@@ -226,21 +241,37 @@ static void log_status(void) {
 
 static void clear_player_targets(void);
 
+static int room_is_outdoor(int room, int subroom) {
+    if (room < 0) {
+        room = 0;
+    }
+    if ((U8(0x801D3765 + (unsigned int)room * 0x58) & 1) == 0) {
+        return 1;
+    }
+    if (subroom >= 0 && (U8(0x801D3765 + (unsigned int)subroom * 0x58) & 1) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
 // 4. Two-view split, Engineer buffer protection, and Death Match HUD rules while drawing.
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     drawing_split = 0;
     if (coop_story_session()) {
         restore_engineer_model(SLOT1_DATA);
-    }
-    if (coop_active()) {
-        if (in_cutscene) {
+        if (in_cutscene && (U16(STATE) & 1) && U8(CUTSCENE_FLAG) == 0 && U8(CUTSCENE_CAM) == 0 && (U16(SCRIPT_FLAGS) & 0x0010) == 0) {
             ensure_normal_player_order();
             set_protagonist(0);
             cutscene_protagonist = 0;
             in_cutscene = 0;
         }
+    }
+    if (coop_active()) {
         log_status();
         U8(MODE) = 2;
+        int p0_out = room_is_outdoor(S16(ROOM_STATE + 0), S16(ROOM_STATE + 2));
+        int p1_out = room_is_outdoor(S16(ROOM_STATE + 4), S16(ROOM_STATE + 6));
+        U8(0x8016A40F) = (!p0_out && p1_out) ? 1 : 0;
         saved_a495 = U8(0x8016A495);
         saved_a4c1 = U8(0x8016A4C1);
         saved_a4bd = U8(0x8016A4BD);
@@ -563,6 +594,21 @@ RECOMP_HOOK_RETURN("func_800ABC04") void coop_wall_cover_end(void) {
     }
 }
 
+RECOMP_HOOK("func_8003C58C") void coop_room_begin(void) {
+    room_split = 0;
+    if (coop_active()) {
+        U8(MODE) = 2;
+        room_split = 1;
+    }
+}
+
+RECOMP_HOOK_RETURN("func_8003C58C") void coop_room_end(void) {
+    if (room_split) {
+        U8(MODE) = 1;
+        room_split = 0;
+    }
+}
+
 RECOMP_HOOK("func_8003FCE4") void coop_box_col_begin(unsigned int obj) {
     box_room_swapped = 0;
     if (!coop_active() || obj == 0) {
@@ -727,6 +773,19 @@ RECOMP_HOOK("func_800944E0") void coop_event_mgr_begin(void) {
     if (!coop_story_session()) {
         return;
     }
+    if (U8(DEATH_FLAG) != 0) {
+        int dead_p = (S8(SLOT1_DATA + 0x176B) <= 0 && S8(SLOT0_DATA + 0x176B) > 0) ? 1 : 0;
+        cutscene_protagonist = dead_p;
+        trigger_player = dead_p;
+        trigger_ttl = 180;
+        set_protagonist(dead_p);
+        if (dead_p == 1 && U32(PLAYER_PTRS) == SLOT0_DATA) {
+            swap_all_player_state();
+        } else if (dead_p == 0 && U32(PLAYER_PTRS) == SLOT1_DATA) {
+            ensure_normal_player_order();
+        }
+        in_cutscene = 1;
+    }
     unsigned int p1 = U32(PLAYER_PTRS);
     unsigned int p2 = U32(PLAYER_PTRS + 4);
     if (p1 != 0 && p2 != 0 && U16(p1 + 0x16EC) < 2 && U16(p2 + 0x16EC) < 2) {
@@ -780,7 +839,8 @@ RECOMP_HOOK("func_8009BE18") void coop_script_run_begin(void) {
     if (!coop_story_session()) {
         return;
     }
-    if (in_cutscene && cutscene_protagonist == 1 && U32(PLAYER_PTRS) == SLOT0_DATA) {
+    int active_protag = in_cutscene ? cutscene_protagonist : trigger_player;
+    if (active_protag == 1 && U32(PLAYER_PTRS) == SLOT0_DATA) {
         swap_all_player_state();
         be18_swapped = 1;
     }
@@ -798,14 +858,17 @@ RECOMP_HOOK("func_8009E1E0") void coop_cutscene_mode_begin(int mode) {
     if (!coop_story_session()) {
         return;
     }
-    if (mode != 0) {
+    if (mode == 1 || mode == 3) {
+        if (S8(SLOT1_DATA + 0x176B) <= 0 && S8(SLOT0_DATA + 0x176B) > 0) {
+            trigger_player = 1;
+        }
         cutscene_protagonist = trigger_player;
         set_protagonist(cutscene_protagonist);
         unsigned int other = (cutscene_protagonist == 1) ? SLOT0_DATA : SLOT1_DATA;
         U32(other + 0x0154) = 0;
         U32(other + 0x0158) = 0;
         U16(other + 0x16EC) = 0;
-        U16(other + 0x16F0) = 1;
+        U8(other + 0x16F0) = 1;
         if (cutscene_protagonist == 1 && U32(PLAYER_PTRS) == SLOT0_DATA) {
             swap_all_player_state();
         }
@@ -817,7 +880,7 @@ RECOMP_HOOK_RETURN("func_8009E1E0") void coop_cutscene_mode_end(void) {
     if (!coop_story_session()) {
         return;
     }
-    if (e1e0_mode == 0) {
+    if (e1e0_mode == 0 || e1e0_mode == 2) {
         ensure_normal_player_order();
         set_protagonist(0);
         cutscene_protagonist = 0;
