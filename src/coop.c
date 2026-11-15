@@ -46,6 +46,9 @@ static unsigned char hud_updating;
 static unsigned char swapped_players;
 static unsigned int cur_enemy;
 static unsigned char bullet_split;
+static unsigned char damage_story_mode;
+static unsigned int lock_other_player;
+static unsigned short lock_saved_in_use;
 static unsigned int last_log;
 
 // Cover, item pickup, and cutscene state:
@@ -398,6 +401,48 @@ RECOMP_HOOK_RETURN("func_800B876C") void coop_bullet_end(void) {
     if (bullet_split) {
         U8(MODE) = 1;
         bullet_split = 0;
+    }
+}
+
+// 7b. Apply Story Mode direct damage during friendly-fire bullet hits (skip Versus HUD score gate).
+RECOMP_HOOK("func_80057BB4") void coop_damage_begin(int dmg, unsigned int target, int attacker_idx) {
+    (void)dmg;
+    (void)target;
+    (void)attacker_idx;
+    damage_story_mode = 0;
+    if (bullet_split && U8(MODE) == 2) {
+        U8(MODE) = 1;
+        damage_story_mode = 1;
+    }
+}
+
+RECOMP_HOOK_RETURN("func_80057BB4") void coop_damage_end(void) {
+    if (damage_story_mode) {
+        U8(MODE) = 2;
+        damage_story_mode = 0;
+    }
+}
+
+// 7c. Prevent auto-aim lock-on from targeting the other player.
+RECOMP_HOOK("func_80058438") void coop_lockon_begin(unsigned int player) {
+    lock_other_player = 0;
+    if (!coop_active()) {
+        return;
+    }
+    unsigned int p0 = U32(PLAYER_PTRS);
+    unsigned int p1 = U32(PLAYER_PTRS + 4);
+    unsigned int other = (player == p0) ? p1 : (player == p1 ? p0 : 0);
+    if (other != 0) {
+        lock_other_player = other;
+        lock_saved_in_use = U16(other + 0x92);
+        U16(other + 0x92) = 0;
+    }
+}
+
+RECOMP_HOOK_RETURN("func_80058438") void coop_lockon_end(void) {
+    if (lock_other_player != 0) {
+        U16(lock_other_player + 0x92) = lock_saved_in_use;
+        lock_other_player = 0;
     }
 }
 

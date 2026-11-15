@@ -26,6 +26,8 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 | `func_800D1E24` | `0x800D1E24` (`0x2A8`) | `HOOK` / `HOOK_RETURN` | `coop_hud_update_begin` / `coop_hud_update_end` | Ativa `MODE = 2` durante o update da HUD para atualizar vida, arma, munição, reload e laser de P1 e P2. |
 | `func_800337A8` | `0x800337A8` (`0xBC0`) | `HOOK` / `HOOK_RETURN` | `coop_enemy_begin` / `coop_enemy_end` | Troca ponteiros P1/P2 quando P2 está vivo e mais próximo (histerese `0.64`) e mantém inimigos visíveis (`~0x100`) nas salas de ambos. |
 | `func_800B876C` | `0x800B876C` (`0x500`) | `HOOK` / `HOOK_RETURN` | `coop_bullet_begin` / `coop_bullet_end` | Ativa `MODE = 2` para projéteis de jogadores quando `friendly_fire` está ligado (`0 = On`). |
+| `func_80057BB4` | `0x80057BB4` (`0x2C0`) | `HOOK` / `HOOK_RETURN` | `coop_damage_begin` / `coop_damage_end` | Alterna `MODE = 1` dentro de `func_80057BB4` durante `bullet_split` para aplicar dano direto de Story Mode sem depender da flag de HUD Versus. |
+| `func_80058438` | `0x80058438` (`0x4C4`) | `HOOK` / `HOOK_RETURN` | `coop_lockon_begin` / `coop_lockon_end` | Zera temporariamente `in_use (+0x92)` do outro jogador durante a busca de alvo para remover o lock-on automático entre players. |
 | `func_800ABC04` | `0x800ABC04` (`0x830`) | `HOOK` / `HOOK_RETURN` | `coop_wall_cover_begin` / `coop_wall_cover_end` | Ativa `MODE = 2` para pular o check de distância de slots (`0x1718 < 150.0f`) que bloqueava cover na parede entre P1 e P2. |
 | `func_8003FCE4` | `0x8003FCE4` (`0x39C`) | `HOOK` / `HOOK_RETURN` | `coop_box_col_begin` / `coop_box_col_end` | Troca `ROOM_STATE` (`0x8016A410` ↔ `0x8016A414`) quando chamado para P2, habilitando cover em caixas/pilares e portas na sala do P2. |
 | `func_800AB594` | `0x800AB594` (`0x3B8`) | `HOOK` / `HOOK_RETURN` | `coop_kick_begin` / `coop_kick_end` | Zera temporariamente `in_use (+0x92)` do parceiro quando `friendly_fire` está desligado (`!= 0`), evitando chute acidental ao tentar dar cover. |
@@ -142,7 +144,9 @@ Lista completa dos símbolos em [winback.us.syms.toml](file:///C:/Users/Alberto/
 | `func_8004D6E8` | `0x8004D6E8` | `0x17C` | Descompactação de modelo para RAM |
 | `func_8004DE48` | `0x8004DE48` | `0x10C` | Push na fila de eventos (`a0=type, a3=obj`) |
 | `func_80053BB4` | `0x80053BB4` | `0x200` | Auxiliar de personagens/objetos |
-| `func_80057100` | `0x80057100` | `0xB98` | Renderização de personagem humano |
+| `func_80057100` | `0x80057100` | `0xAB4` | Renderização de personagem humano |
+| `func_80057BB4` | `0x80057BB4` | `0x2C0` | Aplicação de dano em personagem |
+| `func_80058438` | `0x80058438` | `0x4C4` | Busca de alvo / lock-on automático do jogador |
 | `func_800593EC` | `0x800593EC` | `0xA70` | Criação/inicialização de jogador |
 | `func_80059E5C` | `0x80059E5C` | `0x6A0` | Update de jogador (inclui check `0x18CD & 2`) |
 | `func_8006B298` | `0x8006B298` | `0x78` | Auxiliar de setup de jogadores |
