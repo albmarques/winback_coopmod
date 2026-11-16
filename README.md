@@ -122,7 +122,13 @@ Like all `N64Recomp` mods, `winback_coop` is **not** compiled to native x86_64 c
    - `[0/3]` `python tools/gen_hud_tex.py` to regenerate [`src/hud_tex_data.h`](src/hud_tex_data.h) from [`assets/hud/`](assets/hud/).
    - `[1/3]` `clang.exe -target mips -mips2 -mabi=32 -O2 -G0 -mno-abicalls -fno-pic -ffreestanding -nostdlib ...` to compile [`src/coop.c`](src/coop.c) into `build/coop.o`.
    - `[2/3]` `ld.lld.exe -m elf32btsmip -nostdlib -T mod.ld --emit-relocs --unresolved-symbols=ignore-all -e 0 ...` to link `build/mod.elf`.
-   - `[3/3]` `RecompModTool.exe mod.toml build` to produce `build/winback_coop.nrm` and copy it to the game's `mods/` directory.
+   - `[3/3]` `RecompModTool.exe mod.toml build` to produce `build/winback_coop.nrm`.
+
+### Installation
+
+After compiling, the generated `winback_coop.nrm` file (`build/winback_coop.nrm`) **must be placed inside the `mods/` folder** of your *WinBack Recompiled* installation (for example, `mods/winback_coop.nrm` in the same directory as `WinBackRecompiled.exe`).
+
+> Note: `build.bat` automatically copies `build\winback_coop.nrm` to `..\..\WinBackRecompiled-v0.3.0-Windows-x64\mods\winback_coop.nrm` for the local workspace layout. If your game is located elsewhere, copy `build/winback_coop.nrm` into your game's `mods/` directory manually.
 
 ---
 
