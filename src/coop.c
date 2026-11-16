@@ -279,9 +279,25 @@ static unsigned int sky_draw_player;
 static short sky_draw_saved_room;
 
 // 4. Two-view split, Engineer buffer protection, and Death Match HUD rules while drawing.
+// Auto-aim tuning: func_80058438 reads its range/cone limits from rodata doubles.
+static void set_f64(unsigned int addr, unsigned int hi, unsigned int lo) {
+    if (U32(addr) != hi || U32(addr + 4) != lo) {
+        U32(addr) = hi;
+        U32(addr + 4) = lo;
+    }
+}
+
+static void apply_aim_tuning(void) {
+    set_f64(0x80117050u, 0x40C77000u, 0x00000000u); // base range: 1600 -> 12000
+    set_f64(0x80117058u, 0x40CB5800u, 0x00000000u); // enemy range: 2000 -> 14000
+    set_f64(0x80117060u, 0x3FF921FBu, 0x54442D18u); // aim cone: 72 deg -> 90 deg
+    set_f64(0x80117068u, 0x40740000u, 0x00000000u); // close-range bypass: 200 -> 320
+}
+
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     drawing_split = 0;
     if (coop_story_session()) {
+        apply_aim_tuning();
         restore_engineer_model(SLOT1_DATA);
         if (in_cutscene && (U16(STATE) & 1) && U8(CUTSCENE_FLAG) == 0 && U8(CUTSCENE_CAM) == 0 && (U16(SCRIPT_FLAGS) & 0x0010) == 0) {
             ensure_normal_player_order();
