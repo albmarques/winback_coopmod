@@ -12,7 +12,7 @@ Although *WinBack*'s original N64 engine already supports split-screen viewports
 
 - **Target Project:** [https://github.com/RetroPulse03/WinBackRecomp](https://github.com/RetroPulse03/WinBackRecomp)
 - **Mod ID / Version:** `winback_coop` (`v0.2.0`, requires `WinBackRecomp >= 0.3.0`)
-- **Output Package:** `winback_coop.nrm`
+- **Latest Release (`.nrm`):** [v0.2.0 Release](https://github.com/albmarques/winback_coopmod/releases/tag/v0.2.0) ([direct download `winback_coop.nrm`](https://github.com/albmarques/winback_coopmod/releases/download/v0.2.0/winback_coop.nrm))
 
 ---
 
@@ -100,6 +100,17 @@ winback_coop/
 
 ---
 
+## Download & Installation
+
+You can **either download the pre-compiled release** or **compile the mod from source** (see [Building the Mod](#building-the-mod) below):
+
+1. **Use the pre-compiled release (easiest):** Download `winback_coop.nrm` from the **[GitHub Releases page (v0.2.0)](https://github.com/albmarques/winback_coopmod/releases/tag/v0.2.0)** (or [latest release](https://github.com/albmarques/winback_coopmod/releases/latest)).
+2. **Or compile from source:** Run [`build.bat`](build.bat) to generate `build/winback_coop.nrm`.
+3. Place `winback_coop.nrm` inside the **`mods/`** folder of your *WinBack Recompiled* installation (for example, `mods/winback_coop.nrm` in the same directory as `WinBackRecompiled.exe`).
+4. Launch the game and configure options in the in-game **Mods** menu (`Select` / `Esc`).
+
+---
+
 ## Building the Mod
 
 Like all `N64Recomp` mods, `winback_coop` is **not** compiled to native x86_64 code. It is compiled from C into a **32-bit big-endian MIPS II ELF** relocated at `0x81000000` (outside the original 8 MB N64 RDRAM) and packaged into a `.nrm` archive containing `mod.json`, `mod_binary.bin`, and `mod_syms.bin`.
@@ -123,10 +134,7 @@ Like all `N64Recomp` mods, `winback_coop` is **not** compiled to native x86_64 c
    - `[1/3]` `clang.exe -target mips -mips2 -mabi=32 -O2 -G0 -mno-abicalls -fno-pic -ffreestanding -nostdlib ...` to compile [`src/coop.c`](src/coop.c) into `build/coop.o`.
    - `[2/3]` `ld.lld.exe -m elf32btsmip -nostdlib -T mod.ld --emit-relocs --unresolved-symbols=ignore-all -e 0 ...` to link `build/mod.elf`.
    - `[3/3]` `RecompModTool.exe mod.toml build` to produce `build/winback_coop.nrm`.
-
-### Installation
-
-After compiling, the generated `winback_coop.nrm` file (`build/winback_coop.nrm`) **must be placed inside the `mods/` folder** of your *WinBack Recompiled* installation (for example, `mods/winback_coop.nrm` in the same directory as `WinBackRecompiled.exe`).
+3. Ensure the compiled `winback_coop.nrm` is placed inside your *WinBack Recompiled* `mods/` folder.
 
 > Note: `build.bat` automatically copies `build\winback_coop.nrm` to `..\..\WinBackRecompiled-v0.3.0-Windows-x64\mods\winback_coop.nrm` for the local workspace layout. If your game is located elsewhere, copy `build/winback_coop.nrm` into your game's `mods/` directory manually.
 
