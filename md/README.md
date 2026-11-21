@@ -65,12 +65,12 @@ O motor original do WinBack já possui suporte nativo a múltiplos jogadores e c
 4. **`coop_draw_begin` / `coop_draw_end` (`func_80025F10`)**: Ao entrar na função que constrói as tarefas gráficas do frame, altera temporariamente `MODE = 2` (ativando a renderização split-screen para os dois jogadores) e, ao sair da função (`RECOMP_HOOK_RETURN`), restaura `MODE = 1` (História) para o próximo ciclo de lógica.
 
 ### Limitações Atuais do Mod (Próximas Etapas Planejadas)
-Conforme documentado no próprio código (`coop.c` e `mod.toml`), este é o "Stage 1" do mod (o Jogador 2 aparece, anda e atira em tela dividida). Ainda faltam implementar em etapas futuras:
-- HUD específico para o modo cooperativo;
-- Mira e lock-on entre jogadores / inimigos vistos pelo Jogador 2;
-- Sistema de cobertura (*cover*) para o Jogador 2;
-- Tratamento de morte, revive e game over compartilhado;
-- Comportamento em cutscenes/cenas roteirizadas e câmeras fixas.
+O texto original abaixo era do "Stage 1". Hoje o mod já tem HUD própria, radar com mapa, fileira de armas, painel de munição, menu 1P/2P, cover, lock-on corrigido, cutscenes, fogo amigo, dificuldade co-op e inventário separado (armas e munição). Ainda faltam:
+- Reviver (morte de um jogador ainda leva ao Game Over da História);
+- Kits médicos e itens de chave separados por jogador (o registro `coop: state` serve para localizá-los);
+- Menu de pausa mostrando o inventário de quem pausou;
+- Salvar o inventário do P2 junto com o jogo;
+- Fogo amigo respeitando paredes.
 
 ---
 

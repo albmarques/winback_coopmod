@@ -138,3 +138,44 @@ Se você quiser chamar ou colocar um hook em uma **nova função da ROM** (por e
    - Para **interceptar** a função: use `RECOMP_HOOK("func_800XXXXX")` ou `RECOMP_HOOK_RETURN("func_800XXXXX")`.
    - Para **chamar** a função diretamente: declare `extern void func_800XXXXX(...);` no topo do `coop.c` e chame-a normalmente.
 3. **Execute o [build.bat](file:///C:/Users/Alberto/Documents/projetos/game/winback/winback_coop/winback_coop/build.bat)** para gerar e atualizar o `.nrm`.
+
+---
+
+## 6. Símbolos extras exigidos pela versão atual
+
+As funções abaixo foram adicionadas nesta fase do mod (menu 1P/2P, painel de munição, inventário separado, céu). Elas precisam estar em `generated/winback.us.syms.toml`; se faltarem, o `RecompModTool` ou o carregador de mods do jogo acusam "Reference symbol does not exist". Os tamanhos foram medidos no disassembly da ROM US.
+
+```toml
+    { name = "func_8004DA40", vram = 0x8004DA40, size = 0x6C },  # Novo jogo: zera o bloco de estado da História (hook)
+    { name = "func_8008E6C0", vram = 0x8008E6C0, size = 0x68 },  # Entrada do menu título, todos os controles (chamada)
+    { name = "func_8008E9BC", vram = 0x8008E9BC, size = 0x30 },  # Som de confirmar no menu (chamada)
+    { name = "func_8008E9EC", vram = 0x8008E9EC, size = 0x30 },  # Som de cancelar no menu (chamada)
+    { name = "func_8008EFFC", vram = 0x8008EFFC, size = 0x264 },  # Vai para um estado do menu título (chamada)
+    { name = "func_80090024", vram = 0x80090024, size = 0x64 },  # Cursor do menu para baixo (chamada)
+    { name = "func_80090088", vram = 0x80090088, size = 0x60 },  # Cursor do menu para cima (chamada)
+    { name = "func_800904E4", vram = 0x800904E4, size = 0x1764 },  # Lógica do menu título (hook)
+    { name = "func_800CEC1C", vram = 0x800CEC1C, size = 0x7AC },  # Desenho da coluna de balas original (hook)
+    { name = "func_80028740", vram = 0x80028740, size = 0x194 },  # Monta a matriz do Sky Dome (chamada pelo mod)
+```
+
+`func_80059E5C` (update do jogador, hook do inventário separado) já estava na lista; o tamanho real dela é `0xC9C`.
+
+**Inimigos mais espertos (v0.2.2, `src/enemy_ai.h`).** Mais estas quatro (tamanhos do `gen_recomp_syms.py` atual sobre a ROM US):
+
+```toml
+    { name = "func_80031100", vram = 0x80031100, size = 0x48 },   # Tamanho da rajada do inimigo (RECOMP_PATCH)
+    { name = "func_800CE518", vram = 0x800CE518, size = 0x200 },  # Percepção: distância (chamada)
+    { name = "func_800CE718", vram = 0x800CE718, size = 0x13C },  # Percepção: olhar + linha de visão (hook e chamada)
+    { name = "func_800CE854", vram = 0x800CE854, size = 0x2D4 },  # Percepção: reação (chamada)
+```
+
+Um `winback.us.syms.toml` gerado de novo pelo `tools/regen.sh` do WinBackRecomp já traz todas (e as da lista acima). Nele `func_800337A8` tem `0xB64` (a função termina em `0x8003430C`); listas antigas com `0xBC0` passavam do fim dela.
+
+---
+
+## 7. Armadilhas conhecidas do build
+
+- **Nada de divisão inteira por variável.** O clang emite `teq` (trap de divisão por zero) junto com `div`/`divu`, e o recompilador do jogo não aceita essa instrução: o mod falha com "Failed to load mod code (Failed to recompile mod)". Divisão por constante vira multiplicação e é segura; para dividir por variável use laço ou float. Confira com `llvm-objdump -d build/coop.o | grep -E "\steq\s"` (deve dar 0 linhas).
+- **`src/map_data.h` não vai para o repositório.** Gere a partir da sua ROM com `python tools/extract_maps.py <rom.z64>`.
+- **Arte gerada:** `src/weapon_icons.h` (`tools/gen_weapon_icons.py`) e `src/ammo_tex.h` (`tools/gen_ammo_tex.py`, usa a fonte Montserrat) já estão no repositório; só regenere se mudar a arte.
+- **Hooks que rodam durante o desenho em tela dividida** não podem usar `coop_active()`: `coop_draw_begin` põe `MODE = 2`, e `coop_active()` exige `MODE & 1`. Use `drawing_split` (foi isso que deixava o céu do P2 e o inventário do P2 no HUD errados).

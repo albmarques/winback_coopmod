@@ -40,9 +40,9 @@ extern void func_8006B374(unsigned int player);
 extern void func_8006B3B8(unsigned int player);
 extern void func_8006B564(unsigned int player);
 extern void func_800C4EE0(unsigned int obj);
+extern void func_80028740(unsigned int sky_data);  // build the sky dome matrix
 
 static int spawn_calls;
-static unsigned char drawing_split;
 static unsigned char saved_a495;
 static unsigned char saved_a4c1;
 static unsigned char saved_a4bd;
@@ -147,7 +147,313 @@ static void restore_engineer_model(unsigned int p2) {
 }
 
 // 1. Story's own player count while the stage loads.
+static int radar_map_reset = 1;   // set when a stage loads: the explored-area map starts over
+
+// Co-op difficulty: 0 Normal, 1 Hard, 2 Brutal.
+// enemy_taken: % of the damage enemies take (lower = tougher); enemy_dealt: % of the damage
+// players take; pickup: % of the ammo a pickup gives.
+static const int diff_enemy_taken[3] = { 100, 70, 50 };
+static const int diff_enemy_dealt[3] = { 100, 130, 160 };
+static const int diff_pickup[3]      = { 100, 70, 50 };
+static int coop_difficulty(void) {
+    unsigned int d = recomp_get_config_u32("difficulty");
+    return d > 2 ? 0 : (int)d;
+}
+static int ff_applying;
+static float aim_yaw[2];
+static int aim_ok[2];
+static int bullet_inv_entered;               // our own friendly-fire hit: no difficulty scaling
+
+
+// Separate inventories. The Story inventory is one global block (0x80158760 story state):
+// reserves, weapons owned, rockets and C4. The globals always hold the inventory of the
+// player being processed; P2's own copy lives in inv_p2 and is swapped in while the game runs
+// code for P2 (its player update, its weapon, its pickups), then swapped back.
+static const unsigned int inv_addr[] = {
+    0x801587C0u, // submachine gun reserve
+    0x801587C1u, // shotgun reserve
+    0x801587C4u, // C4 count
+    0x801587C6u, // submachine gun owned
+    0x801587C7u, // shotgun owned
+    0x801587CBu, // rockets
+    0x801587CCu, // handgun magazine upgrade (14 rounds)
+};
+#define INV_N ((int)(sizeof(inv_addr) / sizeof(inv_addr[0])))
+static unsigned char inv_p2[INV_N];
+static int inv_p2_valid;
+static int inv_active;          // whose inventory the globals hold: 0 = P1, 1 = P2
+static int inv_depth;
+
+static unsigned char drawing_split;
+static int inv_separate(void) {
+    // MODE is 2 while the split screen is drawn (HUD), so accept drawing_split as Story too.
+    return U8(PLAYERS) == 2 && ((U8(MODE) & 1) || drawing_split) && recomp_get_config_u32("inventory") == 0;
+}
+
+static void inv_exchange(void) {
+    for (int i = 0; i < INV_N; i++) {
+        unsigned char g = U8(inv_addr[i]);
+        U8(inv_addr[i]) = inv_p2[i];
+        inv_p2[i] = g;
+    }
+    inv_active ^= 1;
+}
+
+// Make the globals hold player k's inventory for a nested section; pair with inv_leave().
+static int inv_enter(int k) {
+    if (!inv_separate() || !inv_p2_valid) return 0;
+    if (inv_depth == 0 && inv_active != k) {
+        inv_exchange();
+        inv_depth = 1;
+        return 1;
+    }
+    if (inv_depth > 0) inv_depth++;
+    return inv_depth > 0;
+}
+
+static void inv_leave(int entered) {
+    if (!entered || inv_depth <= 0) return;
+    inv_depth--;
+    if (inv_depth == 0 && inv_active != 0) inv_exchange();
+}
+
+// Read / write one inventory byte of player k wherever it currently lives.
+static int inv_index(unsigned int addr) {
+    for (int i = 0; i < INV_N; i++) if (inv_addr[i] == addr) return i;
+    return -1;
+}
+static int inv_get(int k, unsigned int addr) {
+    int i = inv_index(addr);
+    if (i < 0 || !inv_separate() || !inv_p2_valid || k == inv_active) return U8(addr);
+    return inv_p2[i];
+}
+static void inv_set(int k, unsigned int addr, int v) {
+    int i = inv_index(addr);
+    if (i < 0 || !inv_separate() || !inv_p2_valid || k == inv_active) { U8(addr) = (unsigned char)v; return; }
+    inv_p2[i] = (unsigned char)v;
+}
+
+// P2 starts each Story session with a copy of P1's inventory.
+static void inv_init_p2(void) {
+    if (inv_active != 0) inv_exchange();
+    for (int i = 0; i < INV_N; i++) inv_p2[i] = U8(inv_addr[i]);
+    inv_p2_valid = 1;
+    inv_depth = 0;
+}
+
+static int inv_slot_of(unsigned int player) {
+    return (player == SLOT1_DATA) ? 1 : 0;
+}
+
+// Live per-player menu (Start in co-op): each player opens a weapon menu in their own view
+// while the game keeps running. Input is read here and hidden from that player's update.
+static int lm_open[2];
+static int lm_cursor[2];          // weapon list cursor
+static int lm_tab[2];             // main page tab: MAP, WEAPON, ITEM, EXIT
+static unsigned int lm_tick;      // +1 per drawn frame
+static int lm_screen[2];          // 0 main page, 1 WEAPON, 2 ITEM, 3 TEAM
+static int lm_tsel[2];            // TEAM page selection
+static int lm_stick_prev[2];
+static int lm_inject;            // 1 = press Start for the original pause menu next frame
+static unsigned short lm_saved_btn;
+static unsigned int lm_saved_raw0, lm_saved_raw1;
+static int lm_suppressed = -1;
+#define RAW_PADS 0x80134718u     // 8 bytes per controller: buttons, stick x, stick y
+
+static int live_menu_on(void) {
+    return recomp_get_config_u32("live_menu") == 0;
+}
+
+static int lm_slot_owned(int k, int slot) {
+    switch (slot) {
+        case 0: return 1;
+        case 1: return inv_get(k, 0x801587C6) != 0;
+        case 2: return inv_get(k, 0x801587C7) != 0;
+        case 3: return inv_get(k, 0x801587CB) != 0;
+        case 4: return inv_get(k, 0x801587C4) != 0;
+    }
+    return 0;
+}
+
+static int lm_slot_held(unsigned int p) {
+    int id = U8(p + 0x1758);
+    if (id >= 0 && id < 4) return id;
+    if (id == 0x14) return 4;
+    return -1;
+}
+
+// Equip a weapon the way the game's weapon switch (func_80062AE8) does it.
+static void lm_equip(unsigned int p, int slot) {
+    if (U16(p + 0x16EC) != 0) return;            // busy (reloading, acting): ignore
+    int old = U8(p + 0x1758);
+    int id = (slot == 4) ? 0x14 : slot;
+    if (old == id) return;
+    if (old == 0x14) U32(p + 0xF8) &= ~0x400u;
+    U8(p + 0x1758) = (unsigned char)id;
+    if (id == 0x14) U32(p + 0xF8) |= 0x400u;
+    if (id == 3 && (U32(p + 0xF4) & 0x100000u)) {
+        U32(p + 0x130) = 0;
+        U16(p + 0x16EC) = 0;
+        U8(p + 0x16F0) = 1;
+        U32(p + 0xF4) &= ~0x100000u;
+    }
+    unsigned int f4 = U32(p + 0xF4);
+    unsigned int tbl;
+    if (f4 & 0x100000u) tbl = (f4 & 0x800u) ? 0x801054D8u : 0x801054C0u;
+    else tbl = (f4 & 0x800u) ? 0x80105450u : 0x80105430u;
+    unsigned int cls = U8(0x80105C70u + (unsigned int)id);
+    unsigned short anim = U16(tbl + cls * 2);
+    U16(p + 0x16E0) = anim;
+    U16(p + 0x16E2) = anim;
+}
+
+static void lm_close_all(void) {
+    lm_open[0] = lm_open[1] = 0;
+}
+
+// Menu input for player k (called at the start of its update); then hides the pad from it.
+static void lm_player_begin(unsigned int p, int k) {
+    lm_suppressed = -1;
+    unsigned int bn = BTN_NEW_P1 + (unsigned int)k * 2;
+    unsigned int raw = RAW_PADS + (unsigned int)k * 8;
+    if (!lm_open[k]) return;
+    if (!coop_active() || !live_menu_on()) { lm_open[k] = 0; return; }
+    unsigned short b = U16(bn);
+    int sy = S8(raw + 3);
+    int dir = 0;
+    if (b & 0x0800) dir = -1;
+    else if (b & 0x0400) dir = 1;
+    else if (sy > 50 && lm_stick_prev[k] <= 50) dir = -1;
+    else if (sy < -50 && lm_stick_prev[k] >= -50) dir = 1;
+    lm_stick_prev[k] = sy;
+    int scr = lm_screen[k];
+    if (dir != 0) {
+        if (scr == 1) {                          // WEAPON page: owned weapons only
+            int c = lm_cursor[k];
+            for (int n = 0; n < 5; n++) {
+                c += dir;
+                if (c < 0) c = 4;
+                if (c > 4) c = 0;
+                if (lm_slot_owned(k, c)) break;
+            }
+            lm_cursor[k] = c;
+        } else if (scr == 3) {
+            lm_tsel[k] ^= 1;
+        } else if (scr == 0) {
+            int t = lm_tab[k] + dir;
+            if (t < 0) t = 3;
+            if (t > 3) t = 0;
+            lm_tab[k] = t;
+        }
+    }
+    if (b & 0x8000) {                            // A
+        if (scr == 1) {
+            if (lm_slot_owned(k, lm_cursor[k])) {
+                lm_equip(p, lm_cursor[k]);
+                lm_screen[k] = 0;
+                lm_open[k] = 0;
+            }
+        } else if (scr == 0) {
+            int t = lm_tab[k];
+            if (t == 1) {
+                int h = lm_slot_held(p);
+                lm_cursor[k] = (h >= 0) ? h : 0;
+                lm_screen[k] = 1;
+            } else if (t == 2) {
+                lm_screen[k] = 2;
+            } else if (t == 3) {                 // EXIT: close
+                lm_open[k] = 0;
+            }
+        }
+    } else if (b & 0x4000) {                     // B: back / close
+        if (scr != 0) lm_screen[k] = 0;
+        else lm_open[k] = 0;
+    }
+    // Hide this controller from the player's update while the menu is (or was just) open.
+    lm_saved_btn = U16(bn);
+    lm_saved_raw0 = U32(raw);
+    lm_saved_raw1 = U32(raw + 4);
+    U16(bn) = 0;
+    U32(raw) = 0;
+    U32(raw + 4) = 0;
+    lm_suppressed = k;
+}
+
+static void lm_player_end(void) {
+    if (lm_suppressed < 0) return;
+    int k = lm_suppressed;
+    U16(BTN_NEW_P1 + (unsigned int)k * 2) = lm_saved_btn;
+    U32(RAW_PADS + (unsigned int)k * 8) = lm_saved_raw0;
+    U32(RAW_PADS + (unsigned int)k * 8 + 4) = lm_saved_raw1;
+    lm_suppressed = -1;
+}
+
+
+// Live menu button (co-op): D-pad down opens the live menu of the player who pressed it.
+static void lm_start_filter(void) {
+    if (lm_inject) {
+        lm_inject = 0;
+        U16(BTN_NEW_P1) |= 0x1000;           // the original pause menu
+        return;
+    }
+    if (!coop_active() || !live_menu_on()) { lm_close_all(); return; }
+    // D-pad down opens this player's live menu (B or EXIT closes it). Start is left alone:
+    // it opens the game's own pause menu as usual.
+    for (int k = 0; k < 2; k++) {
+        unsigned int bn = BTN_NEW_P1 + (unsigned int)k * 2;
+        if (!lm_open[k] && (U16(bn) & 0x0400)) {
+            U16(bn) &= (unsigned short)~0x0400;
+            unsigned int p = k ? SLOT1_DATA : SLOT0_DATA;
+            int h = lm_slot_held(p);
+            lm_open[k] = 1;
+            lm_cursor[k] = (h >= 0) ? h : 0;
+            lm_tab[k] = 0;
+            lm_screen[k] = 0;
+        }
+    }
+}
+
+// Player update (func_80059E5C(obj), player = obj + 0x2C): firing, reloading, weapon change
+// and item use all happen inside it.
+static int inv_pu_entered;
+RECOMP_HOOK("func_80059E5C") void coop_inv_player_begin(unsigned int obj) {
+    inv_pu_entered = 0;
+    lm_suppressed = -1;
+    if (obj >= 0x80000000u && obj < 0x80800000u) {
+        unsigned int pl = U32(obj + 0x2C);
+        if (pl == SLOT1_DATA || pl == SLOT0_DATA) {
+            inv_pu_entered = inv_enter(inv_slot_of(pl));
+            lm_player_begin(pl, inv_slot_of(pl));
+        }
+    }
+}
+RECOMP_HOOK_RETURN("func_80059E5C") void coop_inv_player_end(void) {
+    lm_player_end();
+    inv_leave(inv_pu_entered);
+    inv_pu_entered = 0;
+}
+
+// New game (func_8004DA40 resets the story state): P2's copy is rebuilt at the first stage.
+RECOMP_HOOK_RETURN("func_8004DA40") void coop_inv_new_game(void) {
+    inv_p2_valid = 0;
+    inv_active = 0;
+    inv_depth = 0;
+}
+
+static int spawn_guard;           // frames after a stage load in which P2 is pushed off P1
+static float spawn_side_x = 1.0f, spawn_side_z = 0.0f; // unit vector from P1 to P2 at the start
+
+static float spawn_sqrt(float v) {
+    if (v <= 0.0f) return 0.0f;
+    float r = v > 1.0f ? v : 1.0f;
+    for (int i = 0; i < 20; i++) r = 0.5f * (r + v / r);
+    return r;
+}
+
 RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
+    radar_map_reset = 1;
+    spawn_guard = 90;
+    lm_close_all();
     if (U8(MODE) & 1) {
         U8(PLAYERS) = 1;
         trigger_player = 0;
@@ -158,21 +464,187 @@ RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
     }
 }
 
+// Title menu: "1 PLAYER / 2 PLAYER" screen after STORY.
+// The Versus player-count screen (title state 22) is reused: its three menu sprites
+// (table 0x8010DD00) are swapped for "1 PLAYER", "2 PLAYER" and an invisible third,
+// and while it is open the original title logic is paused and input is handled here.
+#define TITLE_STATE   0x8010DBE8u // u8: title menu state (12 main menu, 13 start Story, 22 Versus players)
+#define TITLE_LIMIT   0x8010DBF0u // s32: title logic only runs once its timer reaches this
+#define TITLE_CURSOR  0x8011D754u // s32: cursor of the current title menu
+#define TITLE_VS_TBL  0x8010DD00u // 3 sprite pointers drawn in state 22
+#define SPR_2P        0x8010D6E8u // original "2 PLAYER" sprite (92x12 CI4)
+#define MENU_SPR_1P   0x80512000u
+#define MENU_SPR_NONE 0x80512040u
+#define MENU_TEX_1P   0x80512100u
+#define MENU_TEX_NONE 0x80512400u
+#define MENU_TEX_SIZE (92 * 12 / 2)
+
+extern unsigned int func_8008E6C0(unsigned int mask);         // menu input from all pads
+extern void func_80090024(unsigned int cursor_ptr, int max); // cursor down (+sound)
+extern void func_80090088(unsigned int cursor_ptr, int max); // cursor up (+sound)
+extern void func_8008E9BC(void);                             // confirm sound
+extern void func_8008E9EC(void);                             // cancel sound
+extern void func_8008EFFC(int state);                        // go to title state (12 = main menu)
+
+static int story_choice = 1;  // 0 = 1 Player, 1 = 2 Players (last choice made in the menu)
+static int story_menu;        // the 1P/2P screen is open
+static int title_prev;
+static int title_frozen;
+static int title_saved_limit;
+static unsigned int title_saved_tbl[3];
+
+// "1" digit drawn in the palette of the "2 PLAYER" texture (indices: 2 edge, 3/4 body, 13 shadow).
+static const unsigned char glyph_one[12][20] = {
+    {0},{0},
+    {0,0,0,0,0,0,0,2,3,3,3,13},
+    {0,0,0,0,2,3,3,3,3,3,3,13},
+    {0,0,0,0,0,0,0,2,3,3,3,13},
+    {0,0,0,0,0,0,2,4,4,4,13},
+    {0,0,0,0,0,0,2,4,4,4,13},
+    {0,0,0,0,0,2,4,4,4,13},
+    {0,0,0,0,0,2,3,3,3,13},
+    {0,0,2,3,3,3,3,3,3,3,3,13},
+    {0},{0},
+};
+
+static void story_menu_open(void) {
+    unsigned int i;
+    unsigned int src = U32(SPR_2P + 8);
+    // "1 PLAYER": the game's own "2 PLAYER" texture with the digit replaced.
+    for (i = 0; i < MENU_TEX_SIZE; i++) {
+        U8(MENU_TEX_1P + i) = U8(src + i);
+        U8(MENU_TEX_NONE + i) = 0;
+    }
+    for (int y = 0; y < 12; y++) {
+        for (int x = 0; x < 20; x++) {
+            unsigned int a = MENU_TEX_1P + (unsigned int)(y * 92 + x) / 2;
+            unsigned char v = glyph_one[y][x];
+            U8(a) = (x & 1) ? (unsigned char)((U8(a) & 0xF0) | v) : (unsigned char)((U8(a) & 0x0F) | (v << 4));
+        }
+    }
+    for (i = 0; i < 0x28; i++) {
+        U8(MENU_SPR_1P + i) = U8(SPR_2P + i);
+        U8(MENU_SPR_NONE + i) = U8(SPR_2P + i);
+    }
+    U32(MENU_SPR_1P + 8) = MENU_TEX_1P;
+    U32(MENU_SPR_NONE + 8) = MENU_TEX_NONE;
+    U16(MENU_SPR_NONE + 0x10) = 0;
+    for (i = 0; i < 3; i++) {
+        title_saved_tbl[i] = U32(TITLE_VS_TBL + i * 4);
+    }
+    U32(TITLE_VS_TBL + 0) = MENU_SPR_1P;
+    U32(TITLE_VS_TBL + 4) = SPR_2P;
+    U32(TITLE_VS_TBL + 8) = MENU_SPR_NONE;
+    U32(TITLE_CURSOR) = 0; // cursor always starts on 1 PLAYER
+    U8(TITLE_STATE) = 22;
+    story_menu = 1;
+}
+
+static void story_menu_close(void) {
+    for (int i = 0; i < 3; i++) {
+        U32(TITLE_VS_TBL + i * 4) = title_saved_tbl[i];
+    }
+    story_menu = 0;
+}
+
+RECOMP_HOOK("func_800904E4") void coop_title_begin(void) {
+    title_prev = U8(TITLE_STATE);
+    title_frozen = 0;
+    if (!story_menu) {
+        return;
+    }
+    if (title_prev != 22) {
+        story_menu_close();
+        return;
+    }
+    unsigned int b = func_8008E6C0(0xC00) & 0xFFFF;
+    if (b == 0x0800) {
+        func_80090088(TITLE_CURSOR, 1);
+    } else if (b == 0x0400) {
+        func_80090024(TITLE_CURSOR, 1);
+    } else if (b == 0x1000 || b == 0x8000) {
+        func_8008E9BC();
+        story_choice = (U32(TITLE_CURSOR) == 0) ? 0 : 1;
+        inv_p2_valid = 0;   // new Story session: P2's inventory is copied from P1 at the first stage
+        story_menu_close();
+        U32(TITLE_CURSOR) = 0;
+        U8(TITLE_STATE) = 13; // start Story; the original code runs it this frame
+        return;
+    } else if (b == 0x4000) {
+        func_8008E9EC();
+        story_menu_close();
+        func_8008EFFC(12); // back to the main menu, cursor on STORY
+        // Fall through to the freeze below: otherwise the main menu would read the same B
+        // press this frame and go back one more screen (to PRESS START).
+    }
+    // Keep the original state-22 (Versus) logic from running this frame.
+    title_saved_limit = (int)U32(TITLE_LIMIT);
+    U32(TITLE_LIMIT) = 0x7FFFFFFF;
+    title_frozen = 1;
+}
+
+RECOMP_HOOK_RETURN("func_800904E4") void coop_title_end(void) {
+    if (title_frozen) {
+        U32(TITLE_LIMIT) = (unsigned int)title_saved_limit;
+        title_frozen = 0;
+    }
+    // STORY was just confirmed on the main menu: show the 1P/2P screen instead of starting.
+    if (!story_menu && title_prev == 12 && U8(TITLE_STATE) == 13 &&
+        recomp_get_config_u32("players") == 0) {
+        story_menu_open();
+    }
+}
+
+// Story player count: config "players" 0 = ask in the menu, 1 = always 2, 2 = always 1.
+static int story_two_players(void) {
+    unsigned int c = recomp_get_config_u32("players");
+    if (c == 1) {
+        return 1;
+    }
+    if (c == 2) {
+        return 0;
+    }
+    return story_choice;
+}
+
 // 2. Player 2's start point, player count, and Versus HUD object creation.
 RECOMP_HOOK("func_8006B310") void coop_stage_players(void) {
     if (!(U8(MODE) & 1) || !(U16(STATE) & 1)) {
         return;
     }
-    float off = (float)recomp_get_config_double("spawn_offset");
-    F32(START_POS + 12 + 0) = F32(START_POS + 0) + off;
+    // 1 Player chosen: leave the stage exactly as the original single-player Story (PLAYERS stays 1).
+    if (!story_two_players()) {
+        return;
+    }
+    float off = (float)recomp_get_config_double("spawn_distance");
+    // Put P2 to the LEFT of P1, as seen from P1's start camera (camera -> player = forward).
+    // Map axes are (X, -Z) with up = -Z, so left of forward (fx, fz) is (fz, -fx) in world X/Z.
+    float fx = F32(START_POS + 0) - F32(START_CAM + 0);
+    float fz = F32(START_POS + 8) - F32(START_CAM + 8);
+    float fl = spawn_sqrt(fx * fx + fz * fz);
+    if (fl > 1.0f) {
+        spawn_side_x = fz / fl;
+        spawn_side_z = -fx / fl;
+    } else {
+        spawn_side_x = 1.0f;
+        spawn_side_z = 0.0f;
+    }
+    if (recomp_get_config_u32("spawn_side") == 1) { // Right
+        spawn_side_x = -spawn_side_x;
+        spawn_side_z = -spawn_side_z;
+    }
+    F32(START_POS + 12 + 0) = F32(START_POS + 0) + spawn_side_x * off;
     F32(START_POS + 12 + 4) = F32(START_POS + 4);
-    F32(START_POS + 12 + 8) = F32(START_POS + 8);
+    F32(START_POS + 12 + 8) = F32(START_POS + 8) + spawn_side_z * off;
     U16(START_ID + 2) = U16(START_ID);
     F32(START_HEAD + 4) = F32(START_HEAD);
-    F32(START_CAM + 12 + 0) = F32(START_CAM + 0) + off;
+    F32(START_CAM + 12 + 0) = F32(START_CAM + 0) + spawn_side_x * off;
     F32(START_CAM + 12 + 4) = F32(START_CAM + 4);
-    F32(START_CAM + 12 + 8) = F32(START_CAM + 8);
+    F32(START_CAM + 12 + 8) = F32(START_CAM + 8) + spawn_side_z * off;
     U8(PLAYERS) = 2;
+    if (!inv_p2_valid) {
+        inv_init_p2();
+    }
     spawn_calls = 0;
     trigger_player = 0;
     trigger_ttl = 0;
@@ -294,9 +766,162 @@ static void apply_aim_tuning(void) {
     set_f64(0x80117068u, 0x40740000u, 0x00000000u); // close-range bypass: 200 -> 320
 }
 
+// Friendly fire: the game's bullets never test the partner in Story, so the mod checks it.
+// A shot is seen as the magazine count dropping; the shooter aims along its view camera.
+static int ff_last_id[2] = { -1, -1 };
+static int ff_last_mag[2] = { -1, -1 };
+
+static float ff_sin(float a) {
+    const float PI = 3.14159265f, TWO_PI = 6.28318531f;
+    int guard = 0;
+    while (a > PI && guard++ < 64) a -= TWO_PI;
+    while (a < -PI && guard++ < 128) a += TWO_PI;
+    if (a > PI * 0.5f) a = PI - a;          // fold to [-pi/2, pi/2]
+    else if (a < -PI * 0.5f) a = -PI - a;
+    float a2 = a * a;
+    return a * (1.0f - a2 / 6.0f * (1.0f - a2 / 20.0f * (1.0f - a2 / 42.0f * (1.0f - a2 / 72.0f))));
+}
+
+static unsigned int ff_mag_addr(unsigned int p, int id) {
+    if (id == 0) return p + 0x1767;
+    if (id == 1) return p + 0x174F;
+    if (id == 2) return p + 0x1763;
+    return 0;
+}
+
+static void coop_friendly_fire(void) {
+    for (int i = 0; i < 2; i++) {
+        unsigned int p = U32(PLAYER_PTRS + i * 4);
+        unsigned int q = U32(PLAYER_PTRS + (i ^ 1) * 4);
+        if (p == 0 || q == 0) continue;
+        int k = (p == SLOT1_DATA) ? 1 : 0;
+        int id = U8(p + 0x1758);
+        unsigned int ma = ff_mag_addr(p, id);
+        int mag = ma ? U8(ma) : -1;
+        int shots = (id == ff_last_id[k] && mag >= 0 && ff_last_mag[k] > mag) ? ff_last_mag[k] - mag : 0;
+        ff_last_id[k] = id;
+        ff_last_mag[k] = mag;
+        if (shots <= 0 || shots > 3 || recomp_get_config_u32("friendly_fire") != 0) continue;
+        if (recomp_get_config_u32("log") != 0) {
+            winback_mod_log(k ? "coop: shot by P2" : "coop: shot by P1");
+        }
+        if (S8(p + 0x176B) <= 0 || S8(q + 0x176B) <= 0) continue;
+        if (U16(p + 0x8E) != U16(q + 0x8E)) continue;
+        // 1) Camera ray: when aiming, the view looks over the shoulder along the line of fire,
+        //    so the partner is hit when close to the ray eye -> look-at of the shooter's view.
+        float ex = F32(0x8015D6D8 + i * 4), ez = F32(0x80178FB0 + i * 4);
+        float cx = F32(0x80158748 + i * 4) - ex, cz = F32(0x801C3808 + i * 4) - ez;
+        float cl = spawn_sqrt(cx * cx + cz * cz);
+        float dy = F32(q + 4) - F32(p + 4);
+        if (dy < 0.0f) dy = -dy;
+        float cside = 99999.0f, calong = 0.0f;
+        if (cl > 1.0f) {
+            cx /= cl;
+            cz /= cl;
+            float qx = F32(q + 0) - ex, qz = F32(q + 8) - ez;
+            float px = F32(p + 0) - ex, pz = F32(p + 8) - ez;
+            calong = qx * cx + qz * cz;
+            float palong = px * cx + pz * cz;          // the shooter's own distance along the ray
+            cside = qx * cz - qz * cx;
+            if (cside < 0.0f) cside = -cside;
+            if (calong < palong + 5.0f) cside = 99999.0f;   // partner behind the shooter
+            calong -= palong;
+        }
+        // 2) Body yaw (player + 0x64, x = sin, z = cos): only trusted at point-blank range.
+        // Aim yaw = body yaw (+0x64) + free-aim offset (+0x158), as the game's shot code adds them
+        // (func_800B8FB0 at 0x800B96E4). The body yaw alone stays where aiming started.
+        float yaw = F32(p + 0x64) + F32(p + 0x158);
+        float fx = ff_sin(yaw);
+        float fz = ff_sin(yaw + 1.5707963f);
+        float dx = F32(q + 0) - F32(p + 0);
+        float dz = F32(q + 8) - F32(p + 8);
+        float along = dx * fx + dz * fz;
+        float side = dx * fz - dz * fx;
+        if (side < 0.0f) side = -side;
+        // The camera turned out not to follow the line of fire; the body yaw does, give or
+        // take a body width: logs showed a dead-on aim within 1 degree, so the cone is narrow.
+        int hit = (dy < 150.0f && along > 5.0f && along < 2500.0f && side < 35.0f + along * 0.03f);
+        (void)cside; (void)calong;
+        if (recomp_get_config_u32("log") != 0) {
+            union { float f; unsigned int u; } a, b2, c, e, g;
+            a.f = yaw; b2.f = dx; c.f = dz; e.f = along; g.f = side;
+            static const char tmpl[] = "coop: ff ... yaw 0x........ dx 0x........ dz 0x........ along 0x........ side 0x........";
+            static char line[sizeof(tmpl)];
+            for (unsigned int n = 0; n < sizeof(tmpl); n++) line[n] = tmpl[n];
+            line[9] = hit ? 'H' : 'm'; line[10] = hit ? 'I' : 'i'; line[11] = hit ? 'T' : 's';
+            put_hex(line + 19, a.u, 8);
+            put_hex(line + 33, b2.u, 8);
+            put_hex(line + 47, c.u, 8);
+            put_hex(line + 64, e.u, 8);
+            put_hex(line + 80, g.u, 8);
+            winback_mod_log(line);
+        }
+        if (!hit) continue;
+        int dmg = (id == 2) ? (along < 600.0f ? 20 : 8) : (id == 1 ? 5 : 8);
+        dmg *= shots;
+        // Apply the hit directly (the game's damage routine can refuse player targets):
+        // lower the life and trigger the same hit reaction it sets (+0x88, +0x174D).
+        int hp = S8(q + 0x176B) - dmg;
+        if (hp < 0) hp = 0;
+        S8(q + 0x176B) = (signed char)hp;
+        U16(q + 0x88) = 0x4000;
+        U8(q + 0x174D) = 0x1E;
+    }
+}
+
+// Hard / Brutal: pickups give less ammo. Reserve counters are compared frame to frame and
+// any increase (a pickup) is scaled down.
+static const unsigned int pick_addr[4] = { 0x801587C0u, 0x801587C1u, 0x801587CBu, 0x801587C4u };
+static int pick_last[2][4] = { { -1, -1, -1, -1 }, { -1, -1, -1, -1 } };
+static int pick_rem[2][4];
+
+static void coop_pickup_scale(int settle) {
+    int d = coop_difficulty();
+    for (int k = 0; k < 2; k++) {
+        for (int i = 0; i < 4; i++) {
+            int v = inv_get(k, pick_addr[i]);
+            int *last = &pick_last[k][i];
+            if (!settle && d != 0 && *last >= 0 && v > *last) {
+                int gain = v - *last;
+                int s2 = gain * diff_pickup[d] + pick_rem[k][i];
+                int g = s2 / 100;
+                pick_rem[k][i] = s2 - g * 100;
+                if (g < 1 && *last == 0) { g = 1; pick_rem[k][i] = 0; }  // never leave a new weapon empty
+                v = *last + g;
+                inv_set(k, pick_addr[i], v);
+            }
+            *last = v;
+        }
+    }
+}
+
+static void ai_frame(void);
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     drawing_split = 0;
+    lm_tick++;
+    ai_frame();
     if (coop_story_session()) {
+        // Spawn guard: if P2 appears on top of P1 right after a stage loads (something reset
+        // its start point), move it to P1's position plus the start offset.
+        if (spawn_guard > 0 && (U16(STATE) & 1)) {
+            spawn_guard--;
+            unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
+            float dx = F32(b + 0) - F32(a + 0);
+            float dz = F32(b + 8) - F32(a + 8);
+            float off = (float)recomp_get_config_double("spawn_distance");
+            if (off > 0.0f && dx * dx + dz * dz < (off * 0.5f) * (off * 0.5f) &&
+                U16(a + 0x8E) == U16(b + 0x8E)) {
+                F32(b + 0) = F32(a + 0) + spawn_side_x * off;
+                F32(b + 4) = F32(a + 4);
+                F32(b + 8) = F32(a + 8) + spawn_side_z * off;
+            }
+        }
+        if (coop_active()) {
+            coop_friendly_fire();
+            coop_pickup_scale(spawn_guard > 0);
+        } else {
+            coop_pickup_scale(1);
+        }
         apply_aim_tuning();
         restore_engineer_model(SLOT1_DATA);
         if (in_cutscene && (U16(STATE) & 1) && U8(CUTSCENE_FLAG) == 0 && U8(CUTSCENE_CAM) == 0 && (U16(SCRIPT_FLAGS) & 0x0010) == 0) {
@@ -341,7 +966,7 @@ RECOMP_HOOK_RETURN("func_80025F10") void coop_draw_end(void) {
 // 4a. Per-viewport sky/black background clear and Sky Dome / Cloud rendering when one player is indoors and the other is outdoors.
 RECOMP_HOOK("func_80026EB8") void coop_fb_clear_begin(void) {
     fb_clear_active = 0;
-    if (!coop_active()) {
+    if (!drawing_split) {   // runs inside the split draw, where MODE = 2 and coop_active() is false
         return;
     }
     fb_p0_out = room_is_outdoor(S16(ROOM_STATE + 0), S16(ROOM_STATE + 2));
@@ -403,7 +1028,9 @@ RECOMP_HOOK_RETURN("func_800C4EE0") void coop_sky_update_end(void) {
 
 RECOMP_HOOK("func_800C4FB0") void coop_sky_draw_begin(unsigned int obj) {
     sky_draw_obj = 0;
-    if (!coop_active() || obj == 0) {
+    // During the split draw MODE is 2 (not Story), so coop_active() is false here: that kept
+    // this whole per-viewport sky fix from ever running. drawing_split is the right test.
+    if (!drawing_split || obj == 0) {
         return;
     }
     int vp = U8(0x8016A40F) ? 1 : 0;
@@ -429,6 +1056,24 @@ RECOMP_HOOK("func_800C4FB0") void coop_sky_draw_begin(unsigned int obj) {
                 func_800C4EE0(obj);
                 F32(sky_data + 0x24) = saved_u;
                 F32(sky_data + 0x28) = saved_v;
+                // Centre the dome on THIS viewport's player directly (the update above goes
+                // through obj + 0x20 -> player + 0x1740, which can still lead to P1), with the
+                // height rule of func_800C4EE0: room height + 100, at least 500.
+                F32(sky_data + 0) = F32(p_vp + 0);
+                F32(sky_data + 8) = F32(p_vp + 8);
+                int h = S16(0x801D3760 + (unsigned int)out_room * 0x58);
+                F32(sky_data + 4) = (h > 500) ? (float)h + 100.0f : 500.0f;
+                func_80028740(sky_data);
+                if (vp == 1 && recomp_get_config_u32("log") != 0) {
+                    static unsigned int sky_last_log;
+                    unsigned int now = winback_mod_time_us();
+                    if ((unsigned int)(now - sky_last_log) > 2000000u) {
+                        sky_last_log = now;
+                        unsigned int po = U32(p_vp + 0x1740);
+                        int ok = (po >= 0x80000000u && po < 0x80800000u && U32(po + 0x2C) == p_vp);
+                        winback_mod_log(ok ? "coop: sky P2 parent ok" : "coop: sky P2 parent points elsewhere (fixed)");
+                    }
+                }
             }
         }
     }
@@ -495,9 +1140,12 @@ RECOMP_HOOK_RETURN("func_800593EC") void coop_p2_model(void) {
 }
 
 // 6. Enemies target nearer living player and stay visible in either player's room.
+#include "enemy_ai.h"
+
 RECOMP_HOOK("func_800337A8") void coop_enemy_begin(unsigned int obj) {
     swapped_players = 0;
     cur_enemy = 0;
+    ai_cur_idx = -1;
     if (!coop_active() || recomp_get_config_u32("enemies") != 0) {
         return;
     }
@@ -508,14 +1156,27 @@ RECOMP_HOOK("func_800337A8") void coop_enemy_begin(unsigned int obj) {
     if (e == 0 || p0 == 0 || p1 == 0) {
         return;
     }
+    // Smarter enemies (enemy_ai.h): slot state, senses, and whether the game looks this frame.
+    int ai_lv = ai_level();
+    ai_tune_senses(e, ai_lv);          // also puts Original values back after switching the option
+    if (ai_lv != 0) {
+        ai_cur_idx = ai_slot_index(e);
+        if (ai_cur_idx >= 0) {
+            ai_slot_check(ai_cur_idx, e);
+            unsigned int id7 = U8(e + 0x16F4) % 7u, clk7 = U32(GAME_CLOCK) % 7u;   // constant: no trap
+            ai_natural = (U32(e + 0xFC) & 0x10000) || id7 == clk7;
+        }
+    }
     int hp0 = S8(p0 + 0x176B);
     int hp1 = S8(p1 + 0x176B);
     if (hp0 <= 0) {
         if (hp1 <= 0) {
             return;
         }
+        if (ai_cur_idx >= 0) ai_target[ai_cur_idx] = 1;
     } else {
         if (hp1 <= 0) {
+            if (ai_cur_idx >= 0) ai_target[ai_cur_idx] = 0;
             return;
         }
         float dx1 = F32(e + 0) - F32(p1 + 0);
@@ -528,7 +1189,20 @@ RECOMP_HOOK("func_800337A8") void coop_enemy_begin(unsigned int obj) {
         float dz0 = F32(e + 8) - F32(p0 + 8);
         float d0 = dx0 * dx0 + dy0 * dy0 + dz0 * dz0;
 
-        if (!(d1 < d0 * 0.64f)) {
+        int want_p1 = (d1 < d0 * 0.64f);
+        if (ai_lv != 0 && ai_cur_idx >= 0) {
+            // Smart / Elite: keep a target, take revenge on whoever shoots them.
+            want_p1 = ai_pick_target(ai_cur_idx, e, p0, p1, d0, d1, ai_lv);
+        } else if (coop_difficulty() != 0) {
+            // Hard / Brutal: enemies split their attention between the two players. Each enemy has
+            // a preferred player; it goes for that one when they are in its room, otherwise the nearer.
+            int pref = (int)(((e >> 4) ^ (e >> 9)) & 1);
+            unsigned int pp = pref ? p1 : p0;
+            if (U16(pp + 0x8E) == U16(e + 0x8E)) {
+                want_p1 = pref;
+            }
+        }
+        if (!want_p1) {
             return;
         }
     }
@@ -546,6 +1220,12 @@ RECOMP_HOOK("func_800337A8") void coop_enemy_begin(unsigned int obj) {
 }
 
 RECOMP_HOOK_RETURN("func_800337A8") void coop_enemy_end(void) {
+    // Smarter enemies: extra looks, quicker reactions, squad alert. Runs before the swap back,
+    // while D_801390C0[0] is still the player this enemy fights.
+    if (cur_enemy != 0 && ai_cur_idx >= 0) {
+        ai_after_update(cur_enemy, ai_level());
+    }
+    ai_cur_idx = -1;
     if (swapped_players) {
         unsigned int p0 = U32(PLAYER_PTRS);
         unsigned int p1 = U32(PLAYER_PTRS + 4);
@@ -582,7 +1262,28 @@ RECOMP_HOOK_RETURN("func_800337A8") void coop_enemy_end(void) {
 // 7. Friendly fire: player-fired bullets use Versus collision rules.
 RECOMP_HOOK("func_800B876C") void coop_bullet_begin(unsigned int obj) {
     bullet_split = 0;
-    if (!coop_active() || recomp_get_config_u32("friendly_fire") != 0) {
+    // Remember each player's aim: the shot code (func_800B8FB0) builds the bullet ray from the
+    // weapon object's data (obj + 0x2C): pitch at +0x60, yaw at +0x64,
+    // direction = (sin(yaw) * cos(pitch), -sin(pitch), cos(yaw) * cos(pitch)).
+    bullet_inv_entered = 0;
+    ai_bullet_owner = -1;
+    if (obj >= 0x80000000u && obj < 0x80800000u) {
+        unsigned int owner_obj0 = U32(obj + 0x20);
+        unsigned int bd = U32(obj + 0x2C);
+        if (owner_obj0 >= 0x80000000u && owner_obj0 < 0x80800000u && bd >= 0x80000000u && bd < 0x80800000u) {
+            unsigned int own = U32(owner_obj0 + 0x2C);
+            if (own == SLOT0_DATA || own == SLOT1_DATA) {
+                int k = (own == SLOT1_DATA) ? 1 : 0;
+                aim_yaw[k] = F32(bd + 0x64);
+                aim_ok[k] = 1;
+                bullet_inv_entered = inv_enter(k);
+                ai_bullet_owner = k;
+            }
+        }
+    }
+    // The old friendly-fire trick (Versus MODE during the shot) did not hit the partner:
+    // friendly fire is now done by coop_friendly_fire() instead.
+    if (1) {
         return;
     }
     unsigned int owner_obj = U32(obj + 0x20);
@@ -594,6 +1295,9 @@ RECOMP_HOOK("func_800B876C") void coop_bullet_begin(unsigned int obj) {
 }
 
 RECOMP_HOOK_RETURN("func_800B876C") void coop_bullet_end(void) {
+    inv_leave(bullet_inv_entered);
+    ai_bullet_owner = -1;
+    bullet_inv_entered = 0;
     if (bullet_split) {
         U8(MODE) = 1;
         bullet_split = 0;
@@ -601,10 +1305,41 @@ RECOMP_HOOK_RETURN("func_800B876C") void coop_bullet_end(void) {
 }
 
 // 7b. Apply Story Mode direct damage during friendly-fire bullet hits (skip Versus HUD score gate).
+static unsigned int dmg_target;
+static int dmg_hp_before;
+#define DMG_REM_N 16
+static unsigned int dmg_rem_ptr[DMG_REM_N];
+static int dmg_rem_val[DMG_REM_N];
+
+// Integer percent scaling that carries the remainder per target, so small hits add up.
+static int dmg_scale(unsigned int target, int loss, int pct) {
+    int k = 0;
+    for (; k < DMG_REM_N; k++) {
+        if (dmg_rem_ptr[k] == target) break;
+    }
+    if (k == DMG_REM_N) {
+        for (k = 0; k < DMG_REM_N && dmg_rem_ptr[k] != 0; k++) {}
+        if (k == DMG_REM_N) k = (int)((target >> 4) & (DMG_REM_N - 1));
+        dmg_rem_ptr[k] = target;
+        dmg_rem_val[k] = 0;
+    }
+    int v = loss * pct + dmg_rem_val[k];
+    int out = v / 100;               // constant divide: no trap instruction
+    dmg_rem_val[k] = v - out * 100;
+    return out;
+}
+
 RECOMP_HOOK("func_80057BB4") void coop_damage_begin(int dmg, unsigned int target, int attacker_idx) {
     (void)dmg;
-    (void)target;
-    (void)attacker_idx;
+    if (!ff_applying && target >= 0x80000000u && target < 0x80800000u) {
+        ai_on_enemy_hit(target, attacker_idx);
+    }
+    dmg_target = 0;
+    if (coop_story_session() && !ff_applying && target >= 0x80000000u && target < 0x80800000u &&
+        coop_difficulty() != 0) {
+        dmg_target = target;
+        dmg_hp_before = S8(target + 0x176B);
+    }
     damage_story_mode = 0;
     if (bullet_split && U8(MODE) == 2) {
         U8(MODE) = 1;
@@ -613,6 +1348,22 @@ RECOMP_HOOK("func_80057BB4") void coop_damage_begin(int dmg, unsigned int target
 }
 
 RECOMP_HOOK_RETURN("func_80057BB4") void coop_damage_end(void) {
+    if (dmg_target != 0) {
+        unsigned int t = dmg_target;
+        dmg_target = 0;
+        int after = S8(t + 0x176B);
+        int loss = dmg_hp_before - after;
+        if (loss > 0) {
+            int is_player = (t == SLOT0_DATA || t == SLOT1_DATA);
+            int d = coop_difficulty();
+            int pct = is_player ? diff_enemy_dealt[d] : diff_enemy_taken[d];
+            int nl = dmg_scale(t, loss, pct);
+            int hp = dmg_hp_before - nl;
+            if (hp < 0) hp = 0;
+            if (hp > 127) hp = 127;
+            S8(t + 0x176B) = (signed char)hp;
+        }
+    }
     if (damage_story_mode) {
         U8(MODE) = 2;
         damage_story_mode = 0;
@@ -864,11 +1615,13 @@ static int should_p2_pick_item(unsigned int item_data) {
     return d2 < d1;
 }
 
+static int item_inv_entered[8];
 static void item_pick_begin(unsigned int obj) {
     if (coop_active() && obj != 0 && should_p2_pick_item(U32(obj + 0x2C))) {
         if (item_swap_depth == 0) {
             swap_player_ptrs_and_rooms();
         }
+        if (item_swap_depth < 8) item_inv_entered[item_swap_depth] = inv_enter(1);  // P2 gets the item
         item_swap_depth++;
     }
 }
@@ -876,6 +1629,7 @@ static void item_pick_begin(unsigned int obj) {
 static void item_pick_end(void) {
     if (item_swap_depth > 0) {
         item_swap_depth--;
+        if (item_swap_depth < 8) inv_leave(item_inv_entered[item_swap_depth]);
         if (item_swap_depth == 0) {
             swap_player_ptrs_and_rooms();
         }
@@ -942,6 +1696,7 @@ RECOMP_HOOK("func_800944E0") void coop_event_mgr_begin(void) {
     if (!coop_story_session()) {
         return;
     }
+    lm_start_filter();
     if (U8(DEATH_FLAG) != 0) {
         int dead_p = (S8(SLOT1_DATA + 0x176B) <= 0 && S8(SLOT0_DATA + 0x176B) > 0) ? 1 : 0;
         cutscene_protagonist = dead_p;
@@ -1226,7 +1981,603 @@ static void hud_update_health_bar(int char_idx, unsigned int tex_addr, const uns
     }
 }
 
+// 12. Partner radar: a small round radar in the lower right of each view that shows where the
+// other player is. Drawn as one more 2D sprite right after the life bar (see radar.h).
+#include "radar.h"
+
+#define RADAR_SPRITE_P1 0x8050B800u
+#define RADAR_SPRITE_P2 0x8050B840u
+#define RADAR_TEX_P1    0x8050C000u   // 64 * 64 * 2 = 0x2000 bytes each
+#define RADAR_TEX_P2    0x8050E000u
+// Radar offset from the (x, y) the game gives the life bar: lower right corner of each view.
+#define RADAR_DX        52
+#define RADAR_DY        (-26)
+
+static int radar_init_done[2] = { 0, 0 };
+static unsigned int last_radar_log;
+
+// Explored-area map: one byte per cell, shared by both players, in the Expansion Pak range.
+#define RADAR_GRID      0x80530000u   // 256 * 256 bytes
+static float map_ox, map_oz;          // world position (map axes) at the centre of the grid
+static int map_ready;
+
+// Camera forward direction per viewport, smoothed so the radar never snaps.
+static float cam_fx[2], cam_fy[2];
+static int cam_ok[2];
+
+static void radar_map_clear(float cx, float cz) {
+    for (unsigned int i = 0; i < (unsigned int)(RADAR_GRID_N * RADAR_GRID_N); i += 4) {
+        U32(RADAR_GRID + i) = 0;
+    }
+    map_ox = cx;
+    map_oz = cz;
+    map_ready = 1;
+}
+
+static void radar_map_stamp(float mx, float mz) {
+    float fx = (mx - map_ox) * (1.0f / RADAR_CELL) + (RADAR_GRID_N / 2) + 0.5f;
+    float fz = (mz - map_oz) * (1.0f / RADAR_CELL) + (RADAR_GRID_N / 2) + 0.5f;
+    if (fx < 2.0f || fz < 2.0f || fx > RADAR_GRID_N - 3 || fz > RADAR_GRID_N - 3) {
+        return;
+    }
+    int ix = (int)fx, iz = (int)fz;
+    for (int dz = -1; dz <= 1; dz++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            U8(RADAR_GRID + (iz + dz) * RADAR_GRID_N + ix + dx) = 1;
+        }
+    }
+}
+
+// The character's facing is learned from how it walks: the yaw at +0x64 is compared with the
+// walking direction under 8 possible conventions (4 rotations x 2 turn directions).
+static float cal_score[8];
+static int cal_n;
+static int cal_best;
+static float cal_last_x[2], cal_last_z[2];
+static int cal_last_ok[2];
+
+static void radar_calibrate(int slot, float mx, float mz, float heading) {
+    if (cal_last_ok[slot]) {
+        float vx = mx - cal_last_x[slot];
+        float vz = mz - cal_last_z[slot];
+        float d2 = vx * vx + vz * vz;
+        if (d2 > 1.0f && d2 < 40000.0f) {
+            float inv = 1.0f / radar_sqrt(d2);
+            vx *= inv;
+            vz *= inv;
+            for (int c = 0; c < 8; c++) {
+                float hh = ((c & 1) ? -heading : heading) + (float)(c >> 1) * 1.57079633f;
+                cal_score[c] += vx * radar_sin(hh) + vz * radar_cos(hh);
+            }
+            cal_n++;
+            if (cal_n >= 30) {
+                int best = 0;
+                for (int c = 1; c < 8; c++) {
+                    if (cal_score[c] > cal_score[best]) {
+                        best = c;
+                    }
+                }
+                cal_best = best;
+            }
+            if (cal_n > 1500) {
+                for (int c = 0; c < 8; c++) {
+                    cal_score[c] *= 0.5f;
+                }
+                cal_n = 750;
+            }
+        }
+    }
+    cal_last_x[slot] = mx;
+    cal_last_z[slot] = mz;
+    cal_last_ok[slot] = 1;
+}
+
+static void radar_log(const RadarIn *in) {
+    if (recomp_get_config_u32("log") == 0) {
+        return;
+    }
+    unsigned int now = winback_mod_time_us();
+    if ((unsigned int)(now - last_radar_log) < 1000000u) {
+        return;
+    }
+    last_radar_log = now;
+    union { float f; unsigned int u; } h, dx, dz;
+    h.f = in->heading;
+    dx.f = in->dx;
+    dz.f = in->dz;
+    static const char tmpl[] = "coop: radar heading 0x........ dx 0x........ dz 0x........ (float bits)";
+    static char line[sizeof(tmpl)];
+    unsigned int i;
+    for (i = 0; i < sizeof(tmpl); i++) {
+        line[i] = tmpl[i];
+    }
+    put_hex(line + 22, h.u, 8);
+    put_hex(line + 36, dx.u, 8);
+    put_hex(line + 50, dz.u, 8);
+    winback_mod_log(line);
+}
+
+static void radar_draw(int player_idx, unsigned int player, int char_idx, int x, int y) {
+    if (player_idx > 1 || U8(PLAYERS) != 2 || recomp_get_config_u32("radar") != 0) {
+        return;
+    }
+    unsigned int other = U32(PLAYER_PTRS + (player_idx ^ 1) * 4);
+    if (other == 0 || other == player) {
+        return;
+    }
+
+    static const float ranges[3] = { 600.0f, 1200.0f, 2400.0f };
+    unsigned int range_opt = recomp_get_config_u32("radar_range");
+    if (range_opt > 2) {
+        range_opt = 1;
+    }
+
+    // Map axes: x = world X, z = -world Z (the game is right handed, Y is up). The "left/right fix"
+    // option flips the Z sign if this guess is wrong.
+    float zs = (recomp_get_config_u32("radar_mirror") != 0) ? 1.0f : -1.0f;
+    float mx = F32(player + 0);
+    float mz = zs * F32(player + 8);
+    float ox = F32(other + 0);
+    float oz = zs * F32(other + 8);
+    float heading = F32(player + 0x64);
+
+    // Explored-area map (reset on each stage load or after a big jump).
+    unsigned int map_mode = recomp_get_config_u32("radar_map");   // 0 level map, 1 full level map, 2 trail, 3 off
+    int map_img = -1;
+    unsigned int room_mask = 0xFFFFFFFFu;
+    int cur_room = (int)U16(player + 0x8E);
+    unsigned int stage = U8(0x8016A4EB);
+    if (map_mode <= 1 && stage < 0x52 && map_stage[stage] < MAP_IMAGES) {
+        map_img = map_stage[stage];
+        if (map_mode == 0) {
+            // Same rule as the game's map screen: one bit per room in a per-image word at 0x80158764.
+            // The game only marks rooms P1 visits, so rooms where either player stands count too.
+            unsigned int mi = (unsigned int)map_img;
+            if (mi == 22) mi = 1;
+            else if (mi == 23) mi = 6;
+            room_mask = U32(0x80158764u + mi * 4u);
+            unsigned int r0 = U16(player + 0x8E), r1 = U16(other + 0x8E);
+            if (r0 < 32) room_mask |= 1u << r0;
+            if (r1 < 32) room_mask |= 1u << r1;
+        }
+    }
+    int use_map = (map_mode == 2) || (map_mode <= 1 && map_img < 0);
+    if (use_map) {
+        float jx = mx - map_ox, jz = mz - map_oz;
+        if (radar_map_reset || !map_ready || jx > 6000.0f || jx < -6000.0f || jz > 6000.0f || jz < -6000.0f) {
+            radar_map_clear(mx, mz);
+            radar_map_reset = 0;
+        }
+        radar_map_stamp(mx, mz);
+        radar_map_stamp(ox, oz);
+    }
+
+    // The radar turns with the CAMERA of this viewport (what you see as "up" on screen), not with the
+    // character's own yaw, which snaps to the stick direction. Eye / look-at tables are per player.
+    int slot = player_idx & 1;
+    float cex = F32(0x8015D6D8 + slot * 4), cez = F32(0x80178FB0 + slot * 4);
+    float clx = F32(0x80158748 + slot * 4), clz = F32(0x801C3808 + slot * 4);
+    float vfx = clx - cex;
+    float vfy = zs * (clz - cez);
+    float vl2 = vfx * vfx + vfy * vfy;
+    int has_fwd = 0;
+    if (vl2 > 1.0f && vl2 < 1.0e10f) {
+        float inv = 1.0f / radar_sqrt(vl2);
+        vfx *= inv;
+        vfy *= inv;
+        if (!cam_ok[slot]) {
+            cam_fx[slot] = vfx;
+            cam_fy[slot] = vfy;
+            cam_ok[slot] = 1;
+        } else {
+            cam_fx[slot] += (vfx - cam_fx[slot]) * 0.3f;
+            cam_fy[slot] += (vfy - cam_fy[slot]) * 0.3f;
+            float l2 = cam_fx[slot] * cam_fx[slot] + cam_fy[slot] * cam_fy[slot];
+            if (l2 > 0.0001f) {
+                float k = 1.0f / radar_sqrt(l2);
+                cam_fx[slot] *= k;
+                cam_fy[slot] *= k;
+            }
+        }
+        has_fwd = 1;
+    }
+
+    radar_calibrate(slot, mx, mz, heading);
+    int has_face = 0;
+    float face_x = 0.0f, face_y = 1.0f;
+    if (cal_n >= 30) {
+        float hh = ((cal_best & 1) ? -heading : heading) + (float)(cal_best >> 1) * 1.57079633f;
+        face_x = radar_sin(hh);
+        face_y = radar_cos(hh);
+        has_face = 1;
+    }
+
+    RadarIn in;
+    in.dx = ox - mx;
+    in.dz = oz - mz;
+    in.heading = heading;
+    in.range = ranges[range_opt];
+    in.viewer = char_idx;
+    in.other_room = U16(player + 0x8E) != U16(other + 0x8E);
+    in.other_dead = S8(other + 0x176B) <= 0;
+    in.north_up = recomp_get_config_u32("radar_mode") != 0;
+    in.rot90 = (int)(recomp_get_config_u32("radar_rot") & 3);
+    in.mirror = 0;
+    in.has_face = has_face;
+    in.face_x = face_x;
+    in.face_y = face_y;
+    in.has_fwd = has_fwd;
+    in.fwd_x = cam_fx[slot];
+    in.fwd_y = cam_fy[slot];
+    in.use_map = use_map;
+    in.map_img = map_img;
+    in.room_mask = room_mask;
+    in.cur_room = cur_room;
+    in.wx = mx;
+    in.wz = mz;
+    in.zsign = zs;
+    in.grid = (volatile const unsigned char *)RADAR_GRID;
+    in.gx = mx - map_ox;
+    in.gz = mz - map_oz;
+
+    if (player_idx == 0) {
+        radar_log(&in);
+    }
+
+    unsigned int spr = (char_idx == 1) ? RADAR_SPRITE_P2 : RADAR_SPRITE_P1;
+    unsigned int tex = (char_idx == 1) ? RADAR_TEX_P2 : RADAR_TEX_P1;
+    if (!radar_init_done[char_idx] || U16(spr + 0x02) != RADAR_N) {
+        U8(spr + 0x00) = 0;               // G_IM_FMT_RGBA
+        U8(spr + 0x01) = 2;               // G_IM_SIZ_16b
+        U16(spr + 0x02) = RADAR_N;
+        U16(spr + 0x04) = RADAR_N;
+        U16(spr + 0x06) = 0;
+        U32(spr + 0x08) = tex;
+        U32(spr + 0x0C) = 0;              // no TLUT
+        U16(spr + 0x12) = 0;
+        U16(spr + 0x14) = 0;
+        U16(spr + 0x16) = 0;
+        U32(spr + 0x18) = 0x3F000000u;    // 0.5f: 64 texels -> 32 pixels on the 320x240 screen
+        U32(spr + 0x1C) = 0x3F000000u;
+        U8(spr + 0x20) = 255;
+        U8(spr + 0x21) = 255;
+        U8(spr + 0x22) = 255;
+        U8(spr + 0x23) = 255;
+        U32(spr + 0x24) = 0;
+        radar_init_done[char_idx] = 1;
+    }
+    U16(spr + 0x10) = 0x0001;
+
+    radar_render((volatile unsigned short *)tex, &in);
+    func_8007B8F4(0x801D2C80u, spr, x + RADAR_DX, y + RADAR_DY);
+}
+
+// Weapon row: icons of the weapons in the inventory, top right of each view.
+// The pause menu shows the same 5 slots: handgun (always), SMG, shotgun, rocket launcher, C4.
+// The inventory is the game's single Story inventory (shared); the highlighted icon is the
+// weapon each player is holding (player + 0x1758).
+#include "weapon_icons.h"
+#define WROW_SPR   0x80512800u   // 10 sprites (5 per player), 0x40 apart
+#define WROW_TEX   0x80513000u   // 5 weapons * 3 variants * 48 * 24 * 2 bytes (to 0x8051B700)
+#define WROW_STEP  25            // screen units between icons
+#define WROW_RIGHT 84            // right edge of the row, from x (same as the radar's right edge)
+#define WROW_DY    (-91)         // top of the row, from y (same as the life bar)
+static int wrow_ready;
+
+static int wrow_owned(int k, int slot) {
+    switch (slot) {
+        case 0: return 1;
+        case 1: return inv_get(k, 0x801587C6) != 0;
+        case 2: return inv_get(k, 0x801587C7) != 0;
+        case 3: return inv_get(k, 0x801587CB) != 0;
+        case 4: return inv_get(k, 0x801587C4) != 0;
+    }
+    return 0;
+}
+
+static int wrow_slot_of(int weapon_id) {
+    if (weapon_id >= 0 && weapon_id < 4) return weapon_id;
+    if (weapon_id == 0x14) return 4;
+    return -1;
+}
+
+static void weapon_row_draw(unsigned int player, int char_idx, int x, int y) {
+    if (recomp_get_config_u32("weapon_row") != 0) {
+        return;
+    }
+    const unsigned int tex_size = WICON_W * WICON_H * 2;
+    if (!wrow_ready) {
+        for (int i = 0; i < 5; i++) {
+            for (int v = 0; v < 3; v++) {
+                unsigned int t = WROW_TEX + (unsigned int)(i * 3 + v) * tex_size;
+                for (int k = 0; k < WICON_W * WICON_H; k++) {
+                    U16(t + (unsigned int)k * 2) = weapon_icons[i][v][k];
+                }
+            }
+        }
+        wrow_ready = 1;
+    }
+    int held = wrow_slot_of(U8(player + 0x1758));
+    int n = 0;
+    for (int i = 0; i < 5; i++) n += wrow_owned(char_idx, i);
+    int px = x + WROW_RIGHT - n * WROW_STEP;
+    for (int i = 0; i < 5; i++) {
+        if (!wrow_owned(char_idx, i)) continue;
+        int v = (i == held) ? 1 + char_idx : 0;
+        unsigned int spr = WROW_SPR + (unsigned int)(char_idx * 5 + i) * 0x40;
+        U8(spr + 0x00) = 0;               // RGBA
+        U8(spr + 0x01) = 2;               // 16-bit
+        U16(spr + 0x02) = WICON_W;
+        U16(spr + 0x04) = WICON_H;
+        U16(spr + 0x06) = 0;
+        U32(spr + 0x08) = WROW_TEX + (unsigned int)(i * 3 + v) * tex_size;
+        U32(spr + 0x0C) = 0;
+        U16(spr + 0x10) = 0x0001;
+        U16(spr + 0x12) = 0;
+        U32(spr + 0x14) = 0;
+        U32(spr + 0x18) = 0x3F000000u;    // 0.5f: 48x24 texels -> 24x12 on screen
+        U32(spr + 0x1C) = 0x3F000000u;
+        U8(spr + 0x20) = 255;
+        U8(spr + 0x21) = 255;
+        U8(spr + 0x22) = 255;
+        U8(spr + 0x23) = 255;
+        U32(spr + 0x24) = 0;
+        func_8007B8F4(0x801D2C80u, spr, px, y + WROW_DY);
+        px += WROW_STEP;
+    }
+}
+
+// Ammo panel (replaces the game's bullet column): magazine count, reserve and pips.
+// The game keeps each player's ammo HUD state at 0x8011FB80 + idx * 0x2C:
+// +0 weapon id, +0x18 pointer to the magazine count (u8), +0x22 magazine size (u8).
+#include "ammo_hud.h"
+#include "live_menu.h"
+#define AMMO_STATE   0x8011FB80u
+#define AMMO_SPR_P1  0x80512C00u
+#define AMMO_SPR_P2  0x80512C40u
+#define AMMO_TEX_P1  0x8051C000u   // 128 * 32 * 2 = 0x2000 bytes each
+#define AMMO_TEX_P2  0x8051E000u
+static int ammo_last[2][4] = { { -9, -9, -9, -9 }, { -9, -9, -9, -9 } };
+static unsigned int ammo_saved_id[4];
+static int ammo_hidden[4];
+static int ammo_hide_idx;
+
+// Hide the original bullet column: the function returns early when the weapon id is 0xFF.
+RECOMP_HOOK("func_800CEC1C") void coop_ammo_col_begin(int idx) {
+    ammo_hide_idx = idx;
+    if (idx < 0 || idx > 3 || recomp_get_config_u32("ammo_hud") != 0) {
+        ammo_hide_idx = -1;
+        return;
+    }
+    unsigned int st = AMMO_STATE + (unsigned int)idx * 0x2C;
+    ammo_saved_id[idx] = U32(st);
+    U32(st) = 0xFF;
+    ammo_hidden[idx] = 1;
+}
+
+RECOMP_HOOK_RETURN("func_800CEC1C") void coop_ammo_col_end(void) {
+    int idx = ammo_hide_idx;
+    if (idx >= 0 && idx <= 3 && ammo_hidden[idx]) {
+        U32(AMMO_STATE + (unsigned int)idx * 0x2C) = ammo_saved_id[idx];
+        ammo_hidden[idx] = 0;
+    }
+}
+
+static void ammo_panel_draw(int player_idx, int char_idx, int x, int y) {
+    if (recomp_get_config_u32("ammo_hud") != 0 || player_idx < 0 || player_idx > 3) {
+        return;
+    }
+    unsigned int st = AMMO_STATE + (unsigned int)player_idx * 0x2C;
+    unsigned int id = U32(st);
+    if (id == 0xFF || id > 0x14) {
+        return;
+    }
+    unsigned int mp = U32(st + 0x18);
+    if (mp < 0x80000000u || mp >= 0x80800000u) {
+        return;
+    }
+    AmmoIn in;
+    in.player = char_idx;
+    // Rockets and C4 point at the (per-player) inventory, the rest at the player's own magazine.
+    in.mag = (mp == 0x801587CBu || mp == 0x801587C4u) ? inv_get(char_idx, mp) : U8(mp);
+    in.cap = U8(st + 0x22);
+    if (id == 0) in.cap = inv_get(char_idx, 0x801587CC) ? 14 : 8;   // handgun, with the upgrade
+    if (in.cap > 40) in.cap = 40;
+    if (id == 0) in.reserve = -1;                                   // handgun: unlimited
+    else if (id == 1) in.reserve = inv_get(char_idx, 0x801587C0);   // submachine gun
+    else if (id == 2) in.reserve = inv_get(char_idx, 0x801587C1);   // shotgun
+    else in.reserve = -2;                                           // rocket launcher, C4: count only
+
+    unsigned int spr = char_idx ? AMMO_SPR_P2 : AMMO_SPR_P1;
+    unsigned int tex = char_idx ? AMMO_TEX_P2 : AMMO_TEX_P1;
+    int *last = ammo_last[char_idx];
+    if (last[0] != in.mag || last[1] != in.cap || last[2] != in.reserve || last[3] != (int)id ||
+        U32(spr + 0x08) != tex) {
+        last[0] = in.mag; last[1] = in.cap; last[2] = in.reserve; last[3] = (int)id;
+        ammo_render((volatile unsigned short *)tex, &in);
+        U8(spr + 0x00) = 0;
+        U8(spr + 0x01) = 2;
+        U16(spr + 0x02) = AMMO_W;
+        U16(spr + 0x04) = AMMO_H;
+        U16(spr + 0x06) = 0;
+        U32(spr + 0x08) = tex;
+        U32(spr + 0x0C) = 0;
+        U16(spr + 0x12) = 0;
+        U32(spr + 0x14) = 0;
+        U32(spr + 0x18) = 0x3F000000u;   // 0.5f: 128x32 -> 64x16 on screen
+        U32(spr + 0x1C) = 0x3F000000u;
+        U32(spr + 0x20) = 0xFFFFFFFFu;
+        U32(spr + 0x24) = 0;
+    }
+    U16(spr + 0x10) = 0x0001;
+    func_8007B8F4(0x801D2C80u, spr, x, y);
+}
+
+
+// Live menu drawing (in the player's own view), laid out like the game's pause menu.
+#define LM_SPR_P1 0x80512D00u
+#define LM_SPR_P2 0x80512D40u
+#define LM_TEX_P1 0x80540000u   // 320 * 104 * 2 = 0x10400 bytes each
+#define LM_TEX_P2 0x80560000u
+static unsigned int lm_last_key[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
+static unsigned int lm_frame;
+static int lm_spin_f[2], lm_spin_acc[2], lm_spin_w[2] = { -1, -1 };
+
+static void live_menu_draw(int char_idx, int x, int y) {
+    if (!lm_open[char_idx]) return;
+    int k = char_idx;
+    unsigned int p = k ? SLOT1_DATA : SLOT0_DATA;
+    unsigned int other = k ? SLOT0_DATA : SLOT1_DATA;
+    LiveMenuIn in;
+    in.player = k;
+    in.screen = lm_screen[k];
+    in.tab = lm_tab[k];
+    in.wsel = lm_cursor[k];
+    in.tsel = lm_tsel[k];
+    in.held = lm_slot_held(p);
+    in.spin = 0;
+    in.no_model = 0;
+#ifdef WM_OK
+    // 3D weapon: one step per draw, WM_TURN steps per turn, restarts when the selection changes
+    if (in.screen == LM_S_WEAPON) {
+        if (lm_spin_w[k] != in.wsel) { lm_spin_w[k] = in.wsel; lm_spin_f[k] = 0; }
+        lm_spin_acc[k] = 0;
+        if (++lm_spin_f[k] >= WM_TURN) lm_spin_f[k] = 0;
+        in.spin = lm_spin_f[k];
+    } else {
+        lm_spin_w[k] = -1;
+    }
+#elif defined(WSPIN_OK)
+    // rotating weapon: one turn every WSPIN_TICKS frames, restarts when the selection changes
+    if (in.screen == LM_S_WEAPON) {
+        if (lm_spin_w[k] != in.wsel) { lm_spin_w[k] = in.wsel; lm_spin_f[k] = 0; lm_spin_acc[k] = 0; }
+        lm_spin_acc[k] += WSPIN_N;
+        while (lm_spin_acc[k] >= WSPIN_TICKS) {
+            lm_spin_acc[k] -= WSPIN_TICKS;
+            if (++lm_spin_f[k] >= WSPIN_N) lm_spin_f[k] = 0;
+        }
+        in.spin = lm_spin_f[k];
+    } else {
+        lm_spin_w[k] = -1;
+    }
+#endif
+    static const unsigned int mag_off[3] = { 0x1767, 0x174F, 0x1763 };
+    // The key leaves the turn step out: on the WEAPON page the page is drawn once and only the
+    // weapon's block is repainted as it turns (see below).
+    unsigned int key = (unsigned int)(in.screen * 1031 + in.tab * 131 + in.tsel * 17 + in.wsel * 7 + in.held + 3) * 2654435761u;
+    for (int i = 0; i < 5; i++) {
+        in.owned[i] = lm_slot_owned(k, i);
+        if (i < 3) in.mag[i] = U8(p + mag_off[i]);
+        else in.mag[i] = inv_get(k, i == 3 ? 0x801587CB : 0x801587C4);
+        in.reserve[i] = (i == 0) ? -1 : (i == 1) ? inv_get(k, 0x801587C0) : (i == 2) ? inv_get(k, 0x801587C1) : -2;
+        in.cap[i] = (i == 0) ? (inv_get(k, 0x801587CC) ? 14 : 8) : 0;
+        key = key * 31u + (unsigned int)(in.owned[i] * 977 + in.mag[i] * 13 + in.reserve[i] + 5);
+    }
+    // map: the level image and the rooms discovered (as the game's map screen), plus both players
+    in.map_img = -1;
+    in.room_mask = 0;
+    unsigned int stage = U8(0x8016A4EB);
+    if (stage < 0x52 && map_stage[stage] < MAP_IMAGES) {
+        in.map_img = map_stage[stage];
+        unsigned int mi = (unsigned int)in.map_img;
+        if (mi == 22) mi = 1;
+        else if (mi == 23) mi = 6;
+        in.room_mask = U32(0x80158764u + mi * 4u);
+        unsigned int r0 = U16(SLOT0_DATA + 0x8E), r1 = U16(SLOT1_DATA + 0x8E);
+        if (r0 < 32) in.room_mask |= 1u << r0;
+        if (r1 < 32) in.room_mask |= 1u << r1;
+    }
+    for (int i = 0; i < 2; i++) {
+        unsigned int q = i ? SLOT1_DATA : SLOT0_DATA;
+        in.px[i] = F32(q + 0);
+        in.pz[i] = F32(q + 8);
+        in.yaw[i] = F32(q + 0x64) + F32(q + 0x158);
+        in.hp[i] = S8(q + 0x176B);
+        key = key * 31u + (unsigned int)(in.hp[i] * 3 + lm_slot_held(q));
+    }
+    (void)other;
+    key = key * 31u + in.room_mask;
+    unsigned int spr = k ? LM_SPR_P2 : LM_SPR_P1;
+    unsigned int tex = k ? LM_TEX_P2 : LM_TEX_P1;
+    int live_map = (in.screen == 0) && (((lm_tick + (unsigned int)k) & 1u) == 0);   // map moves: redraw every 2nd frame
+    int model = 0;
+#ifdef WM_OK
+    // 3D weapon on screen: P1 repaints it on even frames, P2 on odd ones (half the cost, and two
+    // open menus never draw it in the same frame).
+    model = (in.screen == LM_S_WEAPON && in.wsel >= 0 && in.wsel < 5 && in.owned[in.wsel]);
+    int model_step = model && (((lm_tick + (unsigned int)k) & 1u) == 0);
+#endif
+    if (live_map || key != lm_last_key[k] || U32(spr + 0x08) != tex) {
+        lm_last_key[k] = key;
+        in.no_model = model;
+        live_menu_render((volatile unsigned short *)tex, &in);
+#ifdef WM_OK
+        if (model) {
+            lm_wbg_save((volatile unsigned short *)tex, k);
+            wm_draw((volatile unsigned short *)tex, in.wsel, in.spin, 200, 37);
+        }
+#endif
+        U8(spr + 0x00) = 0;
+        U8(spr + 0x01) = 2;
+        U16(spr + 0x02) = LM_W;
+        U16(spr + 0x04) = LM_H;
+        U16(spr + 0x06) = 0;
+        U32(spr + 0x08) = tex;
+        U32(spr + 0x0C) = 0;
+        U16(spr + 0x12) = 0;
+        U32(spr + 0x14) = 0;
+        U32(spr + 0x18) = 0x3F666666u;   // 0.9f: the split view stretches 2D ~10%, so it fits
+        U32(spr + 0x1C) = 0x3F666666u;
+        U32(spr + 0x20) = 0xFFFFFFFFu;
+        U32(spr + 0x24) = 0;
+    }
+#ifdef WM_OK
+    else if (model_step) {
+        lm_wbg_restore((volatile unsigned short *)tex, k);
+        wm_draw((volatile unsigned short *)tex, in.wsel, in.spin, 200, 37);
+    }
+#endif
+    if (k == 1) lm_frame++;
+    U16(spr + 0x10) = 0x0001;
+    func_8007B8F4(0x801D2C80u, spr, x, y);
+}
+
+// Widescreen anchoring. In the two-view split the recomp widens the picture and anchors each HUD part
+// to the left or right edge with RT64 extended GBI (src/game/hud.cpp): everything from the life bar on
+// (0x800B50FC, the call to this function) is anchored right. This function also draws the mod's ammo
+// panel, radar, weapon row and live menu, so the life bar and ammo panel ended up pushed to the right.
+// When the recomp has just set the right anchor (its rect-align command is the last one in the display
+// list), each piece gets its own anchor here, and the right anchor is put back at the end.
+#define EX_SETRECTALIGN 0x64000006u
+#define HUD_ANCHOR_LEFT   0
+#define HUD_ANCHOR_RIGHT  1
+#define HUD_ANCHOR_CENTRE 2
+static int hud_ws_active;
+
+static void hud_emit(unsigned int w0, unsigned int w1) {
+    unsigned int dl = U32(0x801D2C80);
+    U32(dl) = w0;
+    U32(dl + 4) = w1;
+    U32(0x801D2C80) = dl + 8;
+}
+
+static int hud_ws_detect(void) {
+    unsigned int dl = U32(0x801D2C80);
+    return U32(dl - 16) == EX_SETRECTALIGN && U32(dl - 12) == 0x00400400u;   // right anchor (origin 0x400)
+}
+
+static void hud_anchor(int a) {
+    if (!hud_ws_active) return;
+    // Same values as hud.cpp: offsets in quarter pixels; the 3D picture keeps a 14/320 border that grows by 4/3.
+    unsigned int origin = (a == HUD_ANCHOR_LEFT) ? 0x000u : (a == HUD_ANCHOR_RIGHT) ? 0x400u : 0x800u;
+    int offset = (a == HUD_ANCHOR_LEFT) ? 19 : (a == HUD_ANCHOR_RIGHT) ? (-320 * 4 - 19) : 0;
+    unsigned int packed = ((unsigned int)offset & 0xFFFFu) << 16;
+    hud_emit(EX_SETRECTALIGN, origin | (origin << 12));
+    hud_emit(packed, packed);
+}
+
 RECOMP_PATCH void func_800CF6A8(int player_idx, int x, int y) {
+    hud_ws_active = (U8(PLAYERS) == 2) && hud_ws_detect();
     if (player_idx < 0 || player_idx > 3) {
         return;
     }
@@ -1258,8 +2609,33 @@ RECOMP_PATCH void func_800CF6A8(int player_idx, int x, int y) {
     // Clear bit 0x2000 so func_8007A754 always emits the RDP setup header for our RGBA16 sprite
     U16(spr_addr + 0x10) = 0x0001;
 
-    int hud_x = x - 28;
-    int hud_y = y - 15;
+    // Posicao da HUD: topo de cada viewport, com a borda esquerda alinhada a coluna de munição (pente).
+    // (x, y) vem do chamador original (canto inferior direito do viewport). Antes: x - 28, y - 15.
+    int hud_x = x - 187;
+    int hud_y = y - 91;
+    if (U8(PLAYERS) != 2) {
+        // Single player (1 PLAYER): one tall view, so the co-op offsets land mid-screen.
+        // Put the bar in the lower right corner instead, mirroring the ammo column on the left.
+        hud_x = x - 81;
+        hud_y = y - 27;
+    }
+    hud_anchor(HUD_ANCHOR_LEFT);
     func_8007B8F4(0x801D2C80u, spr_addr, hud_x, hud_y);
+    // Ammo panel: lower left of each view (co-op), above the life bar in single player.
+    if (U8(PLAYERS) == 2) {
+        ammo_panel_draw(player_idx, char_idx, hud_x + 2, hud_y + 80); // lower left, where the bullet column was
+    } else {
+        ammo_panel_draw(player_idx, char_idx, hud_x + 40, hud_y - 17);
+    }
+
+    hud_anchor(HUD_ANCHOR_RIGHT);
+    radar_draw(player_idx, player, char_idx, x, y);
+    if (U8(PLAYERS) == 2) {
+        weapon_row_draw(player, char_idx, x, y);
+        hud_anchor(HUD_ANCHOR_CENTRE);
+        live_menu_draw(char_idx, hud_x - 10, hud_y + 3);
+    }
+    hud_anchor(HUD_ANCHOR_RIGHT);   // what hud.cpp set for the rest of this player's HUD
+    hud_ws_active = 0;
 }
 

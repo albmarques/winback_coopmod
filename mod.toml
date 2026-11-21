@@ -1,10 +1,10 @@
-# WinBack Co-op (v0.2.0): two-player Story co-op with split screen.
+# WinBack Co-op (v0.2.3): two-player Story co-op with split screen.
 
 [manifest]
 id = "winback_coop"
-version = "0.2.0"
+version = "0.2.3"
 display_name = "Story Co-op"
-description = "Two-player Story co-op (controller 2) in the game's two-view split screen. Includes the two-player Death Match HUD, Engineer (model 58) for player 2, enemies that see and attack the nearer living player and stay visible in either player's room, and optional friendly fire. Cover, revive and cutscenes are not done yet."
+description = "Two-player Story co-op (controller 2) in the game's two-view split screen. Includes the two-player Death Match HUD, Engineer (model 58) for player 2, enemies that see and attack the nearer living player and stay visible in either player's room, and optional friendly fire. Also shows a partner radar in the lower right of each view. Revive is not done yet."
 short_description = "Two-player Story co-op (split screen, HUD, Engineer P2, enemy AI)."
 authors = [ "WinBack co-op" ]
 game_id = "winback"
@@ -21,16 +21,24 @@ data_reference_syms_files = [ ]
 additional_files = [ ]
 
 [[manifest.config_options]]
-id = "spawn_offset"
+id = "spawn_distance"
 name = "Player 2 start offset"
-description = "How far, in game units along X, player 2 starts from player 1."
+description = "How far, in game units, player 2 starts from player 1."
 type = "Number"
 min = 0
 max = 200
 step = 10
 precision = 0
 percent = false
-default = 40
+default = 100
+
+[[manifest.config_options]]
+id = "spawn_side"
+name = "Player 2 start side"
+description = "Which side of player 1 player 2 starts on, as seen from player 1's camera."
+type = "Enum"
+options = [ "Left", "Right" ]
+default = "Left"
 
 [[manifest.config_options]]
 id = "p2_character"
@@ -39,6 +47,14 @@ description = "Character model for player 2. Engineer loads multiplayer model 58
 type = "Enum"
 options = [ "Engineer", "Jean-Luc" ]
 default = "Engineer"
+
+[[manifest.config_options]]
+id = "players"
+name = "Story players"
+description = "Menu: after choosing STORY the title menu asks 1 PLAYER / 2 PLAYER. 2 Players / 1 Player: always use that, without asking. 1 Player is the original single-player Story."
+type = "Enum"
+options = [ "Menu", "2 Players", "1 Player" ]
+default = "Menu"
 
 [[manifest.config_options]]
 id = "hud"
@@ -57,11 +73,107 @@ options = [ "On", "Off" ]
 default = "On"
 
 [[manifest.config_options]]
+id = "enemy_ai"
+name = "Enemy AI"
+description = "Co-op only (needs 'Enemies target nearer player' On). Smart: enemies look around more often (every 2 frames instead of 7), see wider (85 deg each side) and farther (2600), react and aim faster, fire one more shot per burst with tighter shots, warn nearby squadmates in the room when they spot you, keep fighting the same player instead of flipping, and go after whoever shoots them. Elite: every frame, 100 deg, 3200, two more shots per burst, even tighter shots and a larger warning radius. Original: the game's own AI."
+type = "Enum"
+options = [ "Original", "Smart", "Elite" ]
+default = "Smart"
+
+[[manifest.config_options]]
+id = "inventory"
+name = "Inventory"
+description = "Separate: each player has their own weapons, reserve ammo, rockets and C4 (P2 starts with a copy of P1's). Shared: one inventory for both, as in the original game."
+type = "Enum"
+options = [ "Separate", "Shared" ]
+default = "Separate"
+
+[[manifest.config_options]]
+id = "difficulty"
+name = "Co-op difficulty"
+description = "Normal: the original game. Hard: enemies take 30% less damage, deal 30% more, split their attacks between both players, and pickups give 30% less ammo. Brutal: enemies take half damage, deal 60% more, and pickups give half the ammo."
+type = "Enum"
+options = [ "Normal", "Hard", "Brutal" ]
+default = "Normal"
+
+[[manifest.config_options]]
 id = "friendly_fire"
 name = "Friendly fire"
-description = "Allow player-fired bullets to hit the other player."
+description = "Shots from one player can hurt the other when they are in the line of fire (same room)."
 type = "Enum"
 options = [ "On", "Off" ]
+default = "Off"
+
+[[manifest.config_options]]
+id = "live_menu"
+name = "Live menu (D-pad down)"
+description = "Co-op: D-pad down opens a game menu (MAP, WEAPON, ITEM, EXIT) in that player's own view while the game keeps running. D-pad/stick to choose, A to select, B to go back or close. Start always opens the original pause menu."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "ammo_hud"
+name = "Ammo display"
+description = "New: a panel under the life bar with the magazine count, reserve ammo and one pip per round. Original: the game's bullet column."
+type = "Enum"
+options = [ "New", "Original" ]
+default = "New"
+
+[[manifest.config_options]]
+id = "weapon_row"
+name = "Weapon row"
+description = "Show the weapons in the inventory in the top right of each view, with the one each player holds highlighted."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "radar"
+name = "Partner radar"
+description = "Show a small radar in the lower right of each view with the other player's position."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "radar_range"
+name = "Radar range"
+description = "How far the radar sees. Beyond this the partner's dot stays on the edge of the radar."
+type = "Enum"
+options = [ "Short", "Medium", "Long" ]
+default = "Medium"
+
+[[manifest.config_options]]
+id = "radar_mode"
+name = "Radar orientation"
+description = "Heading-up turns the radar with your camera (up is what you see ahead). North-up keeps the map fixed and turns your arrow instead."
+type = "Enum"
+options = [ "Heading-up", "North-up" ]
+default = "Heading-up"
+
+[[manifest.config_options]]
+id = "radar_map"
+name = "Radar map"
+description = "Level map: walls of the rooms already visited (same rule as the map screen). Full level map: every room. Explored trail: only where you have walked. Off: no map."
+type = "Enum"
+options = [ "Level map", "Full level map", "Explored trail", "Off" ]
+default = "Level map"
+
+[[manifest.config_options]]
+id = "radar_rot"
+name = "Radar rotation fix"
+description = "If the partner's dot is not where it should be (for example behind you when they are in front), try another value."
+type = "Enum"
+options = [ "0 degrees", "90 degrees", "180 degrees", "270 degrees" ]
+default = "0 degrees"
+
+[[manifest.config_options]]
+id = "radar_mirror"
+name = "Radar left/right fix"
+description = "If the partner's dot shows on the wrong side (left and right swapped), turn this on."
+type = "Enum"
+options = [ "Off", "On" ]
 default = "Off"
 
 [[manifest.config_options]]

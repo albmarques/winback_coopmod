@@ -19,17 +19,19 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 | Função da ROM | VRAM (`size`) | Tipo | Função no `coop.c` | Responsabilidade |
 | :--- | :--- | :--- | :--- | :--- |
 | `func_8004C438` | `0x8004C438` (`0x420`) | `HOOK` | `coop_stage_load` | Força `PLAYERS = 1` ao carregar fase Story e reseta estado de cutscene/buffers. |
-| `func_8006B310` | `0x8006B310` (`0x24`) | `HOOK` | `coop_stage_players` | Copia spawn do P1 para P2 (`+spawn_offset`), ativa `PLAYERS = 2` e cria o objeto do HUD Versus. |
+| `func_8006B310` | `0x8006B310` (`0x24`) | `HOOK` | `coop_stage_players` | Se a escolha for 2 PLAYER, copia o spawn do P1 para o P2 ao lado dele (`spawn_distance`/`spawn_side`, lado calculado pela câmera inicial), ativa `PLAYERS = 2`, cria a cópia do inventário do P2 e o objeto do HUD Versus. |
 | `func_80034364` | `0x80034364` (`0x1A0`) | `HOOK_RETURN` | `coop_keep_slot` | Restaura `p2 + 0x92 = 1` (`in_use`) após o spawner de inimigos limpar slots `1..7`. |
 | `func_800593EC` | `0x800593EC` (`0xA70`) | `HOOK_RETURN` | `coop_p2_model` | Define protagonista inicial (`0x18CC`), carrega modelo Engineer (`0x3A`), texturas e juntas do P2 na 2ª chamada. |
 | `func_80025F10` | `0x80025F10` (`0x560`) | `HOOK` / `HOOK_RETURN` | `coop_draw_begin` / `coop_draw_end` | Preserva buffers do Engineer (inclusive em cutscenes), ativa `MODE = 2` (split-screen) e `0x8010F848 = 0x10` (HUD) no desenho, e restaura `MODE = 1`. |
-| `func_80026EB8` | `0x80026EB8` (`0x288`) | `HOOK` / `HOOK_RETURN` | `coop_fb_clear_begin` / `coop_fb_clear_end` | Define `0x8016A40F` na entrada do clear do framebuffer (após `func_80026A10` sobrescrevê-lo em `0x80025F38`) e emite comandos RDP de fill preto (`0x00010001`) apenas na metade da tela do jogador que estiver em sala interna fechada. |
+| `func_80026EB8` | `0x80026EB8` (`0x288`) | `HOOK` / `HOOK_RETURN` | `coop_fb_clear_begin` / `coop_fb_clear_end` | (Testa `drawing_split`, não `coop_active()`.) Define `0x8016A40F` na entrada do clear do framebuffer (após `func_80026A10` sobrescrevê-lo em `0x80025F38`) e emite comandos RDP de fill preto (`0x00010001`) apenas na metade da tela do jogador que estiver em sala interna fechada. |
 | `func_800C4EE0` | `0x800C4EE0` (`0xD0`) | `HOOK` / `HOOK_RETURN` | `coop_sky_update_begin` / `coop_sky_update_end` | Redireciona temporariamente `obj + 0x20` e `player + 0x8E` para o jogador externo (`get_outdoor_room`) durante o update da matriz do Sky Dome (`0x01006640`). |
-| `func_800C4FB0` | `0x800C4FB0` (`0x30C`) | `HOOK` / `HOOK_RETURN` | `coop_sky_draw_begin` / `coop_sky_draw_end` | Redireciona temporariamente `obj + 0x20`, `PLAYER_PTRS[0]` e `player + 0x8E` de acordo com o viewport atual (`0x8016A40F`), desenhando nuvens 2D e Sky Dome 3D apenas nos viewports que enxergam área externa. |
+| `func_800C4FB0` | `0x800C4FB0` (`0x30C`) | `HOOK` / `HOOK_RETURN` | `coop_sky_draw_begin` / `coop_sky_draw_end` | (Testa `drawing_split`.) Recentraliza o domo no jogador do viewport e refaz a matriz (`func_80028740`); redireciona temporariamente `obj + 0x20`, `PLAYER_PTRS[0]` e `player + 0x8E` de acordo com o viewport atual (`0x8016A40F`), desenhando nuvens 2D e Sky Dome 3D apenas nos viewports que enxergam área externa. |
 | `func_800D1E24` | `0x800D1E24` (`0x2A8`) | `HOOK` / `HOOK_RETURN` | `coop_hud_update_begin` / `coop_hud_update_end` | Ativa `MODE = 2` durante o update da HUD para atualizar vida, arma, munição, reload e laser de P1 e P2. |
-| `func_800337A8` | `0x800337A8` (`0xBC0`) | `HOOK` / `HOOK_RETURN` | `coop_enemy_begin` / `coop_enemy_end` | Troca ponteiros P1/P2 quando P2 está vivo e mais próximo (histerese `0.64`) e mantém inimigos visíveis (`~0x100`) nas salas de ambos. |
-| `func_800B876C` | `0x800B876C` (`0x500`) | `HOOK` / `HOOK_RETURN` | `coop_bullet_begin` / `coop_bullet_end` | Ativa `MODE = 2` para projéteis de jogadores quando `friendly_fire` está ligado (`0 = On`). |
-| `func_80057BB4` | `0x80057BB4` (`0x2C0`) | `HOOK` / `HOOK_RETURN` | `coop_damage_begin` / `coop_damage_end` | Alterna `MODE = 1` dentro de `func_80057BB4` durante `bullet_split` para aplicar dano direto de Story Mode sem depender da flag de HUD Versus. |
+| `func_800337A8` | `0x800337A8` (`0xB64`) | `HOOK` / `HOOK_RETURN` | `coop_enemy_begin` / `coop_enemy_end` | Troca ponteiros P1/P2 quando P2 está vivo e mais próximo (histerese `0.64`; com `enemy_ai` Smart/Elite usa memória de alvo e vingança) e mantém inimigos visíveis (`~0x100`) nas salas de ambos. Com Smart/Elite também ajusta visão/alcance, encurta pausas, faz olhares extras e o alerta ao esquadrão (`ai_after_update`, antes de desfazer a troca). |
+| `func_800CE718` | `0x800CE718` (`0x13C`) | `HOOK` / `HOOK_RETURN` | `coop_ai_look_begin` / `coop_ai_look_end` | Inimigo alertado pelo esquadrão ou atingido: abre o cone de visão `+0x1950` para π durante o teste (a linha de visão continua valendo) e restaura. |
+| `func_80031100` | `0x80031100` (`0x48`) | `PATCH` | `func_80031100` | Tamanho da rajada do inimigo: o mesmo cálculo do jogo + 1 (Smart) / + 2 (Elite) no co-op. |
+| `func_800B876C` | `0x800B876C` (`0x500`) | `HOOK` / `HOOK_RETURN` | `coop_bullet_begin` / `coop_bullet_end` | Atualização da arma do jogador: troca para o inventário do dono (P2) durante a chamada. O antigo truque de `MODE = 2` para fogo amigo foi desativado (não acertava o parceiro). |
+| `func_80057BB4` | `0x80057BB4` (`0x2C0`) | `HOOK` / `HOOK_RETURN` | `coop_damage_begin` / `coop_damage_end` | Guarda a vida (`+0x176B`) do alvo e, no retorno, reescala a perda conforme a dificuldade (inimigos 100/70/50%, jogadores 100/130/160%). |
 | `func_80058438` | `0x80058438` (`0x4C4`) | `HOOK` / `HOOK_RETURN` | `coop_lockon_begin` / `coop_lockon_end` | Zera temporariamente `in_use (+0x92)` do outro jogador durante a busca de alvo para remover o lock-on automático entre players. |
 | `func_800ABC04` | `0x800ABC04` (`0x830`) | `HOOK` / `HOOK_RETURN` | `coop_wall_cover_begin` / `coop_wall_cover_end` | Ativa `MODE = 2` para pular o check de distância de slots (`0x1718 < 150.0f`) que bloqueava cover na parede entre P1 e P2. |
 | `func_8003C58C` | `0x8003C58C` (`0x5F4`) | `HOOK` / `HOOK_RETURN` | `coop_room_begin` / `coop_room_end` | Força `MODE = 2` em `coop_story_session()` (inclusive durante cutscenes/escadas) e desinverte temporariamente `ROOM_STATE` caso `PLAYER_PTRS` esteja trocado, alinhando com `S16(player + 0x90)`. |
@@ -45,7 +47,11 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 | `func_8009BE18` | `0x8009BE18` (`0x204`) | `HOOK` / `HOOK_RETURN` | `coop_script_run_begin` / `coop_script_run_end` | Garante que durante `in_cutscene` com `cutscene_protagonist == 1` os ponteiros continuem apontando para o P2 como protagonista do script. |
 | `func_8009E1E0` | `0x8009E1E0` (`0x818`) | `HOOK` / `HOOK_RETURN` | `coop_cutscene_mode_begin` / `coop_cutscene_mode_end` | Na entrada da cutscene (`mode == 1` ou `mode == 3`), detecta ações diretas (`0x16EC == 23/25/12/13`), fixa `cutscene_protagonist`, para o movimento do outro jogador e ativa `in_cutscene = 1`. Na saída (`mode == 0` ou `mode == 2`), restaura a ordem P1/P2 e limpa a flag `0x20000200` em `SLOT1_DATA + 0x00F4`. |
 | `func_80098F20` | `0x80098F20` (`0x150`) | `HOOK` / `HOOK_RETURN` | `coop_cutscene_teleport_begin` / `coop_cutscene_teleport_end` | Mantém transições intra-fase (escadas/mudança de sala) independentes por jogador; quando o P2 é o protagonista da transição (`PLAYER_PTRS[0] == SLOT1_DATA`), move `START_POS`/`START_ID`/`START_HEAD`/`START_CAM` para o slot 1 e preserva os do P1 no slot 0. |
-| `func_800CF6A8` | `0x800CF6A8` (`0xC4`) | `PATCH` | `func_800CF6A8` | Substitui a barra de vida padrão pela HUD sci-fi customizada (`224x48` em escala `0.5f`) com retratos 3D do Jean-Luc (P1) e Engenheiro (P2). |
+| `func_800CF6A8` | `0x800CF6A8` (`0xC4`) | `PATCH` | `func_800CF6A8` | Substitui a barra de vida padrão pela HUD customizada (retratos, barra `LIFE`) e desenha também o painel de munição, o radar e a fileira de armas. No 1 PLAYER a barra vai para o canto inferior direito. No widescreen da tela dividida, reancora cada peça com o GBI estendido do RT64 (vida/munição à esquerda, radar/armas à direita, menu ao centro; Passo 33). |
+| `func_800904E4` | `0x800904E4` (`0x1764`) | `HOOK` / `HOOK_RETURN` | `coop_title_begin` / `coop_title_end` | Menu título: depois de STORY abre a tela de jogadores do Versus (estado 22) como "1 PLAYER / 2 PLAYER", lê a entrada e pausa a lógica original enquanto ela está aberta. |
+| `func_800CEC1C` | `0x800CEC1C` (`0x7AC`) | `HOOK` / `HOOK_RETURN` | `coop_ammo_col_begin` / `coop_ammo_col_end` | Esconde a coluna de balas original (id da arma `0xFF` durante a chamada) quando "Ammo display" = New. |
+| `func_80059E5C` | `0x80059E5C` (`0xC9C`) | `HOOK` / `HOOK_RETURN` | `coop_inv_player_begin` / `coop_inv_player_end` | Update do jogador (`obj+0x2C` = jogador): troca para o inventário do P2 enquanto o jogo processa o P2. |
+| `func_8004DA40` | `0x8004DA40` (`0x6C`) | `HOOK_RETURN` | `coop_inv_new_game` | Novo jogo: invalida a cópia do inventário do P2 (refeita na primeira fase). |
 
 ---
 
@@ -362,7 +368,13 @@ Esta seção documenta o mapeamento completo de engenharia reversa da transiçã
 | `func_8006B374` | `void func_8006B374(unsigned int player)` | Libera slot de juntas dinâmicas em `D_801DC710`. |
 | `func_8006B3B8` | `void func_8006B3B8(unsigned int player)` | Faz DMA das juntas dinâmicas do modelo atual (`0x3A`) para `D_801DC710`. |
 | `func_8006B564` | `void func_8006B564(unsigned int player)` | Calcula a deformação inicial das juntas dinâmicas. |
-| `func_8007B8F4` | `void func_8007B8F4(unsigned int dl_ptr_ptr, unsigned int sprite_ptr, int x, int y)` | Desenha o sprite `RGBA16` (`224x48`, escala `0.5f`) da HUD customizada na Display List principal (`0x801D2C80`). |
+| `func_8007B8F4` | `void func_8007B8F4(unsigned int dl_ptr_ptr, unsigned int sprite_ptr, int x, int y)` | Desenha os sprites `RGBA16` da HUD, radar, painel de munição e fileira de armas na Display List principal (`0x801D2C80`). |
+| `func_80028740` | `void func_80028740(unsigned int sky_data)` | Refaz a matriz do Sky Dome depois que o mod recentraliza o domo no jogador do viewport. |
+| `func_8008E6C0` | `unsigned int func_8008E6C0(unsigned int mask)` | Lê a entrada do menu (todos os controles) na tela 1P/2P. |
+| `func_80090024` / `func_80090088` | `void (unsigned int cursor_ptr, int max)` | Move o cursor do menu para baixo/cima, com som. |
+| `func_8008E9BC` / `func_8008E9EC` | `void (void)` | Sons de confirmar/cancelar do menu. |
+| `func_8008EFFC` | `void func_8008EFFC(int state)` | Volta ao menu principal (estado 12) ao apertar B na tela 1P/2P. |
+| `func_800CE518` / `func_800CE718` / `func_800CE854` | `int (unsigned int e)` / `void (unsigned int e)` / `void (unsigned int e)` | Percepção do inimigo (distância, olhar + linha de visão, reação). Chamadas fora da vez do jogo para olhar mais vezes (`enemy_ai`). |
 
 ---
 
@@ -394,7 +406,7 @@ Lista completa dos símbolos em [winback.us.syms.toml](file:///C:/Users/Alberto/
 | `func_80057BB4` | `0x80057BB4` | `0x2C0` | Aplicação de dano em personagem |
 | `func_80058438` | `0x80058438` | `0x4C4` | Busca de alvo / lock-on automático do jogador |
 | `func_800593EC` | `0x800593EC` | `0xA70` | Criação/inicialização de jogador |
-| `func_80059E5C` | `0x80059E5C` | `0x6A0` | Update de jogador (inclui check `0x18CD & 2`) |
+| `func_80059E5C` | `0x80059E5C` | `0xC9C` | Update de jogador (inclui check `0x18CD & 2`); hook do inventário separado |
 | `func_8006B298` | `0x8006B298` | `0x78` | Auxiliar de setup de jogadores |
 | `func_8006B310` | `0x8006B310` | `0x24` | Inicialização de jogadores da fase |
 | `func_8006B334` | `0x8006B334` | `0x40` | Auxiliar de juntas dinâmicas |
@@ -423,11 +435,87 @@ Lista completa dos símbolos em [winback.us.syms.toml](file:///C:/Users/Alberto/
 | `func_800C958C` | `0x800C958C` | `0x68` | Checagem de pickup de item solto |
 | `func_800CF6A8` | `0x800CF6A8` | `0xC4` | Desenho da barra de vida (`LIFE`) do jogador |
 | `func_800D1E24` | `0x800D1E24` | `0x2A8` | Atualização de dados da HUD |
+| `func_80028740` | `0x80028740` | `0x194` | Matriz do Sky Dome a partir da posição |
+| `func_8004DA40` | `0x8004DA40` | `0x6C` | Novo jogo (zera o estado da História) |
+| `func_8008E6C0` | `0x8008E6C0` | `0x68` | Entrada do menu título (todos os controles) |
+| `func_8008E9BC` | `0x8008E9BC` | `0x30` | Som de confirmar do menu |
+| `func_8008E9EC` | `0x8008E9EC` | `0x30` | Som de cancelar do menu |
+| `func_8008EFFC` | `0x8008EFFC` | `0x264` | Muda o estado do menu título |
+| `func_80090024` | `0x80090024` | `0x64` | Cursor do menu para baixo |
+| `func_80090088` | `0x80090088` | `0x60` | Cursor do menu para cima |
+| `func_800904E4` | `0x800904E4` | `0x1764` | Lógica do menu título |
+| `func_800CEC1C` | `0x800CEC1C` | `0x7AC` | Coluna de balas original da HUD |
 
 
 ### 3.18 Sky Dome por viewport (`func_800C4FB0` / `func_800282BC`) e armadilhas da escada
 
 - **Sky Dome seguia só o Jean-Luc:** `func_800C4EE0` roda 1x por frame (antes do loop de viewports) e grava `X/Y/Z` do domo em `sky_data+0x00/04/08` e a matriz float 3x4 em `sky_data+0x30` (`func_80028740`). `func_800C4FB0` roda 1x por viewport e chama `func_800282BC`, que converte `sky_data+0x30` para `Mtx` N64 em **`sky_data+0x60`** (buffer único) e emite `gSPMatrix` (`0xDA380003`, ptr) + `gSPDisplayList` (`sky_data+0x168`). Como a DL só executa depois dos dois viewports, o último a escrever vencia.
 - **Correção (`coop_sky_draw_begin/end`):** no begin, se `out_room >= 0`, salva `sky_data+0x24/+0x28` (UV das nuvens), chama `func_800C4EE0(obj)` (o hook de update ignora enquanto `sky_draw_obj != 0`) e restaura os UVs. No end, se `U32(dl-16)==0xDA380003 && U32(dl-12)==sky_data+0x60`, copia os 64 bytes para `SKY_MTX_P1=0x80500080` / `SKY_MTX_P2=0x805000C0` e reescreve o ponteiro em `dl-12`.
-- **Pendente:** com o P1 andando, o céu do P2 ainda pode parecer mais rápido (causa não identificada; salvar o UV como `u32` não ajudou e foi revertido).
+- **Céu seguindo o P1 (tentativa):** além de chamar o update, o begin agora centraliza o domo direto no jogador do viewport (`sky_data+0/+8` = X/Z do jogador, `+4` = altura da sala + 100, mínimo 500, mesma regra de `func_800C4EE0`) e refaz a matriz com `func_80028740(sky_data)`, sem depender de `obj+0x20` → `player+0x1740` (que pode levar ao P1). Com "Log status" ligado, o mod diz se o `+0x1740` do P2 aponta para ele mesmo.
+- **Causa real (log):** `coop_sky_draw_begin` e `coop_fb_clear_begin` testavam `coop_active()`, que exige `MODE & 1`; durante o desenho em tela dividida `coop_draw_begin` põe `MODE = 2`, então os dois hooks nunca rodavam. Agora testam `drawing_split`.
 - **Escada com Engineer:** NÃO bloquear o reset de `SLOT1_DATA` (`0x16EC/0x16F0/0x88/0xF4`) em `coop_cutscene_mode_end` nem o reset do outro jogador em `coop_cutscene_mode_begin` quando a ação for 23/25/12/13: o protagonista da escada ainda está nessa ação no fim e ficava preso (animação cancelada, personagem "voando"). O código deve permanecer como no commit `a5a2b42`.
+
+### 3.19 Menu título, munição, fogo amigo, inventário e dificuldade (resumo técnico)
+
+- **Menu título (`func_800904E4`):** estado em `0x8010DBE8` (12 menu, 13 começar História, 22 jogadores do Versus), cursor `0x8011D754`, tabela de sprites do estado 22 em `0x8010DD00` (desenhada por `func_80091C48` com `func_8008FF34`, `y = 0x9E + i*14`). O hook de retorno detecta 12 → 13 e abre o estado 22 com "1 PLAYER" (textura do "2 PLAYER" com o dígito redesenhado), "2 PLAYER" e um terceiro sprite invisível. Enquanto aberto, a lógica original é pausada pondo `0x8010DBF0` (limite do timer) em `0x7FFFFFFF` por um quadro; o B também pausa o quadro em que volta ao estado 12, senão o menu principal lê o mesmo B e volta para PRESS START.
+- **Coluna de balas (`func_800CEC1C(idx)`):** usa o estado `0x8011FB80 + idx*0x2C` (`+0` id da arma, `+0x18` ponteiro do pente, `+0x22` tamanho do pente). Sai cedo com id `0xFF`, que o mod usa para escondê-la.
+- **Mira do tiro:** o código de tiro (`func_800B8FB0`, em `0x800B96E4`) soma o yaw do corpo `+0x64` com o deslocamento da mira livre `+0x158`; direção x = sin, z = cos. O yaw do corpo sozinho fica travado onde a mira começou. Em Story os jogadores não entram no teste de acerto das balas, por isso o fogo amigo é feito pelo mod (`coop_friendly_fire`, dano direto na vida + reação `+0x88 = 0x4000`, `+0x174D = 0x1E`).
+- **Dano (`func_80057BB4(dmg, alvo, atacante)`):** jogadores e inimigos usam a mesma struct; em Story só faz `vida -= dmg` em `+0x176B`. Primeiro testa `0x8010EDE4` e `+0x92` (pode recusar alvos jogadores).
+- **Inventário:** bloco de estado da História `0x80158760` (0xA0 bytes). `C0`/`C1` reservas (em pentes), `C4` C4, `C6`/`C7` armas obtidas, `CB` foguetes, `CC` pente maior da pistola, `E1`/`E3` estatísticas de tiros/acertos, `E2` abates. Pentes ficam no jogador (`+0x1767`, `+0x174F`, `+0x1763`). Troca do inventário do P2 em `func_80059E5C`, `func_800B876C` e nas coletas do P2.
+- **`drawing_split`:** durante o desenho em tela dividida `MODE = 2`; qualquer hook de desenho deve testar `drawing_split` em vez de `coop_active()`.
+
+## 6. Modelos 3D do menu de pausa (implementado por software; achados da engenharia reversa)
+
+Objetivo: desenhar o modelo 3D da arma na metade da tela de cada jogador. **Feito** com um renderizador por software (`src/wmodel.h`) alimentado por `src/weapon_models.h`, gerado da ROM por `tools/extract_weapon_models.py` (ver `COOP_FUNCIONAMENTO.md`, Passo 29). A abordagem de reutilizar as display lists do jogo foi descartada porque os dados só existem com o pause aberto e porque o estado do RDP no meio da HUD de tela dividida não é garantido; o que foi descoberto para isso fica registrado abaixo (caso o Jean na página TEAM seja feito).
+
+**Onde ficam os dados (só carregados com o pause aberto)**
+- Segmento 1 = `0x8023A2C0`: display lists do pause, copiadas da ROM `0x1141C0` (0x8C50 bytes), com ponteiros absolutos.
+- Vértices: arquivo da ROM `0x8534A0` (formato `u32 n`, `n+1` offsets; entradas sem compressão), tabela de índices `0x8010C670[id]` (bytes), carregados em `0x8027CA00` por `func_8008E728(dest, rom, índice)`. 16 bytes por vértice: `s16 x,y,z`, `u16` flag, `s16 s,t` (s10.5), `s8 nx,ny,nz` (normal, pois a iluminação está ligada) e `u8 a`.
+- Texturas: arquivo `0x8815D0`, tabela `0x8010C688[id]`, carregadas em `0x8028EA00` (entrada 1 = 0xCF60 bytes, usada pelas 5 armas). Imagens CI4 (nibbles, 16 cores RGBA5551 logo depois ou em outro ponto da entrada).
+- O pause usa também a área `0x8029DA00..0x802B0000` (UI, arquivo `0x8964B0`) e buffers do jogo fora do arquivo de texturas: o corpo da pistola usa a textura de reflexo em `0x802ACD10` (paleta `0x802ACF10`) e as outras armas usam `0x802B65B8` (I4) na passada translúcida de reflexo. Essas texturas **não estão** no arquivo `0x8815D0` (buffers do jogo).
+
+**Modelos**
+- Tabela de display lists: `0x8010C610[id]` (24 entradas): pistola `0x010004B0`, SMG `0x01001168`, escopeta `0x010028D0`, id 22 `0x01004000`, id 23 `0x01004A10`. Ids 4..8 são os itens (chaves e cartões) da página ITEM; 9..20 são outros itens.
+- Índices id → modelo do pause: slot da lista do pause (`0x8007DD28`: id de arma 0→12, 1→6, 2→7, 3→11, `0x14`→4) → tabela de salto em `0x80118220` (`0x8007F224`): 12→1 (pistola), 6→2, 7→3, 11→22, 4→23. Ou seja, o id de arma 3 usa o modelo 22 e o id `0x14` usa o modelo 23. **Atenção:** o modelo 22 é um feixe de tubos e o modelo 23 uma pistola de cano longo (silenciador); se o slot 4 do menu for mesmo o C4, o nome/ícone e o modelo não combinam; `--ids` permite trocar.
+- Posição: tabela `0x8010C6A0` (6 bytes por id, `s16 x,y,z`); para id >= 22 o índice é `id - 12`. Rotação X: **0** para ids < 4, 22 e 23 (armas); 0,45 rad para ids 4..8 (itens) e 0,58 para os outros. O giro é em Y.
+- Luzes (`func_80080C90`): ambiente `0x78` (`0x80103790`), luz `0xAA` direção (-120, 80, 30) (`0x80103798`), luz `0xB4` direção (60, -120, 80) (`0x801037A8`), 2 luzes (`DB020000 00000030`).
+- Materiais: `G_TEXTURE` com escala `0x8000` (= 1/64 de texel por unidade de `s,t`) nas partes texturizadas; `0x0800`/`0x07C0` com `G_TEXTURE_GEN` (geometry mode `0x40000`) nas partes com mapa de reflexo; `0xC8113078` = recorte por alfa da paleta; `0xC8104E50` = passada translúcida de reflexo; combine `0xFC127FFF` = textura x sombra, `0xFC3239FF` = cor primária x sombra, `0xFCFFFFFF` = cor primária.
+
+**Desenho no jogo (referência)**
+- Callback do modelo: `func_80080C90` (0x68C bytes; os hooks de diagnóstico `coop_p3d_*` foram removidos; recriar se precisar).
+- Setup DL `0x80103AC0`; viewport de tela cheia `0x801037B8`.
+- Perspectiva ≈ 45°, near 12, far ≈ 5686, perspnorm `0x17`; câmera: translação z = −200.
+- Matriz do modelo: `DA380003`; render mode `E200001C 0C192078`, restaurado para `C8112078` no fim.
+
+**Ainda pendente:** o Jean na página TEAM (retratos continuam 2D), a textura de reflexo real (o renderizador usa metal procedural) e remover os diagnósticos (`pause_model_probe`, `coop_p3d_*`, `coop_state_watch`) quando não forem mais necessários.
+
+### Menu ao vivo: botão (atualização)
+- `lm_start_filter` (em `coop_event_mgr_begin`) abre o menu do jogador quando `BTN_NEW` tem o direcional para baixo (`0x0400`) e apaga o bit. O Start não é tocado: apagar `0x1000` em `BTN_NEW` e no controle cru não impede o jogo de abrir a pausa do P1 quando o menu ao vivo ainda não está aberto, então o Start ficou com o menu de pausa original.
+
+---
+
+## 7. IA dos inimigos (engenharia reversa, base do `enemy_ai`)
+
+Lido do disassembly da ROM US (splat do WinBackRecomp), 2026-11-21. O que não foi visto em jogo está marcado *(inferido)*.
+
+### 7.1 Update e estados
+- `func_800337A8(obj)`: update do inimigo (`e = obj+0x2C`). Calcula distância à câmera 0 (`+0x1720`), ângulo na tela (`+0x1730`), nível de detalhe (`+0x1768`), o ângulo até o jogador 0 em relação à direção do olhar (`+0x171C`), e roda o handler do estado `D_80103BF4[+0x16EC]` (8 bytes por estado: ponteiro, `u16` flags, `u16`). Subestado em `+0x16F0`, estado anterior em `+0x16EE`.
+- Flags do estado (`D_80103BF8`): `0x2` = a percepção roda nesse estado; `0x8`, `0x10`, `0x20`, `0x40` são testadas por `func_8002C53C` (troca de estado).
+- `func_8002C53C(e, estado)`: troca de estado (zera o subestado, guarda o anterior, ajusta bits em `+0xF4`/`+0xFC`).
+- Estados de combate: `18` (`func_8002DA34`) reação ao avistar: espera `+0x174C` (1 se `+0xFC & 0x20000`, senão 3) e vira para o jogador (`func_8002D968`) → `3`. `3` (`func_80030F08`) mira: espera `+0x174C` (6, ou `+0x195E`; só conta enquanto `+0xFC & 0x20080`), gira com `func_800D4840` até a cabeça do alvo (`+0x1900`, copiada de `jogador+0xCD4` por `func_800CA174`) → `4` (ou `5`). `4` (`func_80031148`) atira: a cada evento da animação (`+0xF4 & 4`) com pente `+0x1767 > 0`, chama `func_800AF7D0` (efeito do disparo), soma 1 em `+0x1932` e desvia `+0x158` (giro do tronco/arma); ao fim da rajada repete até 3 ciclos (`+0x174B`, estados `0x18`/`0x1B`) e vai para `5`.
+- Tamanho da rajada (`func_80031100`): `+0x1762 == 0`: 1 tiro (3 com `+0x1958 & 0x2000`); `+0x1762 == 1`: 3 (5); outros: 1.
+- Desvio por tiro (doubles, só usados por `func_80031148`): `D_80115F00`/`F08` = 0,10472 (6°), `D_80115F10` = 0,069813 (4°), `D_80115F18`/`F20` = 0,087266 (5°). Inimigos de id ímpar (`+0x16F4 & 1`) desviam para o lado do jogador, os pares sempre para o mesmo lado *(o efeito no acerto é inferido: o tiro sai da matriz da mão `+0x1698`, em `func_800B876C`)*.
+
+### 7.2 Percepção
+- Roda depois do handler, só com o inimigo e `D_801390C0[0]` vivos, flag `0x2` do estado, `D_80134710 == 0`, e um quadro em 7: `(+0x16F4 % 7) == (D_8010DD60 % 7)` ou `+0xFC & 0x10000`.
+- `func_800CE518(e)`: distância horizontal ao jogador 0 → `+0x1718`; faixa de distância `func_800CE184` (limites `D_801104C0` = 0, 120, 500, 1000, 2000) → `+0x1934` (mudou: `+0xFC |= 0x10020`). Se não está "travado" (`+0xFC & 0x400000`) e a distância passa de `+0x1954`, perde o jogador (`0x80` → `0x100000`) e retorna 0. `+0x1958 & 0x20` (roteiro) retorna 1 sem fazer nada. Também registra o inimigo para ouvir barulho (`func_800C77D0`, ponteiro em `D_8011F9E0[id]`).
+- `func_800CE718(e)`: se `|+0x171C| <= +0x1950`, testa: `+0x1958 & 0x200` (vê uma vez), `& 0x800` (sempre vê) ou a linha de visão `func_80044D98(obj, olho do inimigo +0xCD4, olho do jogador +0xCD4, +0x1960)`. Vendo: `+0xFC |= 0x80` (e `0x80000` na primeira vez; `0x40000` com `+0x1958 & 0x80`). Deixou de ver: `0x100000`.
+- `func_800CE854(e)`: reage pelos bits: primeira vez (`0x80000`, `+0x1930 == 0`) → modo 5 + evento `0x10`; perdeu de vista (`0x100000`) → `+0x1930 = 0x15` e modo 2; barulho (`D_8011F9E0[id]`) → modo 3 + evento `0x15`; fim da espera → modo 4 + evento `0x11`. Os modos são `D_801104E0[modo](e)` (`func_800CE4B4`), ignorados com `+0x1958 & 0x80`: 1 `func_800CE1DC` (escolhe 18/15/12 pela faixa de distância), 2 `func_800CE2B8` (procura: 0/18/12), 3 `func_800CE364` (vai até o barulho, ou até o jogador se a fonte é do tipo 3, e estado 18), 4 `func_800CE3E8` (volta: 0 ou 22), 5 `func_800CE434` (`func_800CAE74` + modo 1), 6 `func_800CE460`, 7 `func_800CE488` (`+0x1958 = 0x104`, estado 0).
+- Criação (`func_8002C86C`): `+0x1950 = 1,2217` (70°, `0x3F9C61AA`) e `+0x1954 = D_801104C8` (2000) para todos os inimigos; só essa função escreve os dois campos.
+
+### 7.3 Como o mod usa isso (`src/enemy_ai.h`)
+- Olhares extras em `coop_enemy_end`, ainda com o alvo do inimigo em `D_801390C0[0]`, só fora da vez do jogo. Como `func_800CE854` desconta `+0x1930` a cada olhar, o mod devolve o valor quando a única mudança foi esse desconto.
+- `+0x1950`/`+0x1954` são trocados quando ainda têm o valor de algum nível (assim trocar a opção no meio do jogo também funciona para inimigos já criados).
+- Alerta ao esquadrão: na transição de `+0xFC & 0x80` de 0 para 1, os outros personagens em uso (`+0x92`), vivos, com objeto `+0x34 == 2`, na mesma sala (`+0x8E`), dentro do raio e sem `+0x1958 & 0x20` ganham 45 quadros de alerta. Enquanto isso o hook em `func_800CE718` usa cone π.
+- Vingança: `coop_damage_begin` → `ai_on_enemy_hit(alvo, atacante)`; o dono do tiro vem de `coop_bullet_begin` (`ai_bullet_owner`), ou do 3º argumento de `func_80057BB4` quando é 0 ou 1 (é o índice `+0x90` do atacante, `-1` = nenhum).
+- Estado por slot (`ai_obj` = objeto `+0x1740`; zera quando o slot é reaproveitado por outro inimigo).
