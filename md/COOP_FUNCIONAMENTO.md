@@ -1056,3 +1056,9 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
   - **desenhos:** ao desenhar a metade do P2 da tela dividida (`0x8016A40F == 1`), a mesma troca, para o feixe aparecer para o P2 e ser testado contra o P2 (atravessar o feixe dispara a armadilha como com o P1).
   - Profundidade de chamada guardada (até 4 níveis); não age se `PLAYER_PTRS` já estiver trocado por outra parte do mod.
 - Opção `traps` ("On" padrão / "Off").
+
+## Passo 51: metralhadora fixa do stage 3 não reconhece o P2 (diagnóstico, v0.3.30)
+
+- **Relato:** a metralhadora montada (ninho de sacos de areia) do stage 3 não reage ao P2.
+- O código dela ainda não foi identificado: pode ser um inimigo comum (`func_8002C830` → `func_800337A8`) num estado de metralhadora, ou um objeto próprio que mira em `D_801390C0` (P1).
+- **Este build só adiciona log:** junto com `p2_state`, uma vez por segundo, até 8 linhas `coop: lad near_p2` com os personagens a menos de 1500 unidades do P2 (lista `D_801788F0`, próximo em `+0x1C`, dados em `+0x2C`): objeto, função de atualização (`+0x24`), tipo (`+0x92`), sala (`+0x8E`), ação (`+0x16EC`), HP, distância ao P2, distância ao P1 e função de desenho (`+0x28`).

@@ -907,6 +907,23 @@ static void log_status(void) {
                            U32(ROOM_STATE + 0), U32(ROOM_STATE + 4), U8(PLAYERS),
                            (unsigned int)hit_room_depth | ((U32(PLAYER_PTRS) == SLOT1_DATA) ? 0x100u : 0u) };
     lad_log("p2_state", v, 10);
+    // Passo 51 diagnosis (stage 3 mounted machine gun): the characters near P2 (list at
+    // D_801788F0, next +0x1C, data +0x2C): object, update (+0x24), type (+0x92), room (+0x8E),
+    // action (+0x16EC), HP, distance to P2 and to P1.
+    int n = 0;
+    for (unsigned int o = U32(0x801788F0); o >= 0x80000000u && o < 0x80800000u && n < 8; o = U32(o + 0x1C)) {
+        unsigned int d = U32(o + 0x2C);
+        if (d < 0x80000000u || d >= 0x80800000u || d == SLOT0_DATA || d == SLOT1_DATA) continue;
+        float x1 = F32(d + 0) - F32(SLOT1_DATA + 0), z1 = F32(d + 8) - F32(SLOT1_DATA + 8);
+        float x0 = F32(d + 0) - F32(SLOT0_DATA + 0), z0 = F32(d + 8) - F32(SLOT0_DATA + 8);
+        float q1 = x1 * x1 + z1 * z1, q0 = x0 * x0 + z0 * z0;
+        if (q1 > 1500.0f * 1500.0f) continue;
+        n++;
+        unsigned int w[9] = { o, U32(o + 0x24), U16(d + 0x92), U16(d + 0x8E), U16(d + 0x16EC),
+                              (unsigned int)(unsigned char)S8(d + 0x176B), (unsigned int)(int)spawn_sqrt(q1),
+                              (unsigned int)(int)spawn_sqrt(q0), U32(o + 0x28) };
+        lad_log("near_p2", w, 9);
+    }
 }
 
 static void clear_player_targets(void);
