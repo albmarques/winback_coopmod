@@ -1090,3 +1090,10 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
   - Ao aparecer, o boss começa no jogador mais perto.
 - Os acertos são contados em `coop_boss_hit_begin` (`boss_ai.h`) pela tarefa de arma que está rodando (`ai_bullet_owner`).
 - Log: `coop: lad boss_target <boss> <novo alvo> <quadros no alvo anterior>`.
+
+## Passo 54: P2 nasce colado no boss da metralhadora (v0.3.34)
+
+- **Relato:** no boss da metralhadora, o P2 aparece muito perto do boss e toma um dano quase impossível de reverter.
+- **Causa:** desde a v0.3.22/23 (Passo 46d/e), com `spawn_distance` = 0 o P2 começava 55 unidades **à frente** do P1 em toda carga de mapa. Em início de fase, continue e checkpoint, o ponto de início costuma olhar para os inimigos, então o P2 começava mais perto do boss.
+- **Agora:** em `coop_stage_players` o mod sabe se a carga é uma troca de mapa por porta: a carga foi pedida pelo script com `0x8016A418` = 1 (lido no início de `func_8004C438`), o mapa (`0x8016A41A`) é diferente do da carga anterior e não houve continue/checkpoint antes (`spawn_restored`, marcado em `coop_checkpoint_restore_end`; jogo novo zera a memória em `coop_inv_new_game`). Só nesse caso o P2 começa 55 à frente (como na porta dupla). Nos outros casos começa 55 **atrás** do P1 (rumo inicial invertido), longe do que o P1 encara.
+- Log: `coop: lad p2_start_ahead` ou `coop: lad p2_start_behind` (o último campo diz se foi porta).

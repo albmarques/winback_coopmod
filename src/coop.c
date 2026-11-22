@@ -80,6 +80,9 @@ static void lad_event(const char *tag, int a, int b);   // ladder diagnosis (log
 static void lad_log(const char *tag, const unsigned int *v, int n);
 static int hit_room_depth;
 static int hit_diag_lines;
+static unsigned int spawn_prev_map = 0xFFFFu;   // map of the last load (Passo 54)
+static unsigned int spawn_load_flag;             // 0x8016A418 when the load started
+static int spawn_restored;                 // a continue / checkpoint restore came before this load
 static int itemdiag_ready;              // Passo 52 diagnosis
 static unsigned int mg_obj[8];         // Passo 51b machine guns
 // Passo 47 diagnosis: after a P2 shot, the enemies near P2 and the rooms of everyone.
@@ -532,6 +535,7 @@ RECOMP_HOOK_RETURN("func_8009C8E0") void coop_checkpoint_save_end(void) {
 }
 
 RECOMP_HOOK_RETURN("func_8009C998") void coop_checkpoint_restore_end(void) {
+    spawn_restored = 1;                       // Passo 54: the next load is a continue, not a door
     // The game just wrote P1's checkpoint inventory into the globals: they are P1's again.
     inv_active = 0;
     inv_depth = 0;
@@ -549,6 +553,7 @@ RECOMP_HOOK_RETURN("func_8009C998") void coop_checkpoint_restore_end(void) {
 
 // New game (func_8004DA40 resets the story state): P2's copy is rebuilt at the first stage.
 RECOMP_HOOK_RETURN("func_8004DA40") void coop_inv_new_game(void) {
+    spawn_prev_map = 0xFFFFu;                 // Passo 54: a new game starts with a stage start
     inv_p2_valid = 0;
     inv_active = 0;
     inv_depth = 0;
@@ -585,6 +590,7 @@ static int hp_keep_pending;
 static signed char hp_keep[2];
 
 RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
+    spawn_load_flag = U16(0x8016A418);
     hp_keep_pending = 0;
     if (coop_story_session() && U8(PLAYERS) == 2) {
         hp_keep[0] = S8(SLOT0_DATA + 0x176B);
@@ -821,8 +827,18 @@ RECOMP_HOOK("func_8006B310") void coop_stage_players(void) {
         // the stage 2 building it looked inwards, and P2 started inside). The start heading is
         // the way the player faces after the door: 0 = +Z, pi = -Z (seen in the log on both
         // sides of the double door), so "ahead" = (sin h, cos h).
+        // v0.3.34: ahead only for a door map change (same stage, another map, not a continue).
+        // At a stage start, a continue or a checkpoint the start often faces the enemies (the
+        // machine-gun boss): P2 started right in front of it. There P2 starts 55 units BEHIND.
+        // A door load is requested by the script with 0x8016A418 = 1 (Passo 4.3 of HOOKS); a
+        // continue/checkpoint comes after func_8009C998 and a new game has no previous map.
+        unsigned int cur_map = U16(0x8016A41A);
+        int door = (spawn_load_flag == 1 && spawn_prev_map != 0xFFFFu && spawn_prev_map != cur_map && !spawn_restored);
+        spawn_prev_map = cur_map;
+        spawn_restored = 0;
         float h = F32(START_HEAD);
-        float ax = spawn_sin(h) * 55.0f, az = spawn_sin(h + 1.5707963f) * 55.0f;
+        float dist = door ? 55.0f : -55.0f;
+        float ax = spawn_sin(h) * dist, az = spawn_sin(h + 1.5707963f) * dist;
         F32(START_POS + 12 + 0) += ax;
         F32(START_POS + 12 + 8) += az;
         F32(START_CAM + 12 + 0) += ax;
@@ -830,8 +846,8 @@ RECOMP_HOOK("func_8006B310") void coop_stage_players(void) {
         if (recomp_get_config_u32("log") != 0) {
             union { float f; unsigned int u; } hb, cx, cz;
             hb.f = h; cx.f = fx; cz.f = fz;
-            unsigned int v[6] = { U16(0x8016A41A), U32(START_POS + 12 + 0), U32(START_POS + 12 + 8), hb.u, cx.u, cz.u };
-            lad_log("p2_start_ahead", v, 6);
+            unsigned int v[7] = { U16(0x8016A41A), U32(START_POS + 12 + 0), U32(START_POS + 12 + 8), hb.u, cx.u, cz.u, (unsigned int)door };
+            lad_log(door ? "p2_start_ahead" : "p2_start_behind", v, 7);
         }
     }
     U8(PLAYERS) = 2;
