@@ -1116,3 +1116,8 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **P1 movido por cena (`jump_follow_frame`):** a cada quadro de jogo (fora de cena, sem jogadores trocados) o mod compara a posição do P1 com a do último quadro de jogo. Se o P1 saltou mais de 250 unidades (cena, script; não escada/mureta do P1), o P2 está vivo e a mais de 300 do P1, o P2 é posto 45 unidades atrás do P1 do mesmo jeito que `func_80098F20` faz: posição, rumo `+0x64`, marcador `+0x8A`, sala `+0x8E` por `func_8003CB80(marcador & 0xFFF)` e `func_8003C58C(P2)`. A memória é zerada em cada carga de fase.
 - Log: `coop: lad jump_follow <x P1> <z P1> <marcador> <sala>`.
 - Tudo isso faz parte da opção `door_fix`.
+
+### Passo 56b: a cena move o P1 antes do primeiro quadro de jogo (v0.3.37)
+
+- **Log do teste (v0.3.36):** a luta começa numa carga de fase (mapa 4). Na carga os dois ficam no ponto de início (P1 em 5000/8900, P2 ao lado). A introdução põe o P1 em 5898/8420 (valores redondos, posição de script) **antes** do primeiro quadro de jogo; como a vigilância de saltos só começava no primeiro quadro de jogo, esse movimento não contava como salto, e o P2 ficou no ponto de início, mais perto da chefe (distâncias 0x2CA do P2 e 0x39C do P1).
+- **Correção:** em `coop_stage_players` a vigilância de saltos começa já com o ponto de início do P1 (`START_POS`). No primeiro quadro de jogo, o P1 deslocado pela introdução conta como salto e o P2 é levado para 45 atrás dele (`jump_follow`).

@@ -81,6 +81,7 @@ static void lad_log(const char *tag, const unsigned int *v, int n);
 static int hit_room_depth;
 static int hit_diag_lines;
 static int jf_valid;                       // Passo 56 jump follow
+static float jf_last[3];
 static unsigned int spawn_prev_map = 0xFFFFu;   // map of the last load (Passo 54)
 static unsigned int spawn_load_flag;             // 0x8016A418 when the load started
 static int spawn_restored;                 // a continue / checkpoint restore came before this load
@@ -862,6 +863,13 @@ RECOMP_HOOK("func_8006B310") void coop_stage_players(void) {
             lad_log(door ? "p2_start_ahead" : "p2_start_side", v, 7);
         }
     }
+    // Passo 56b: the intro of a boss can move P1 before the first frame of play (shotgun boss:
+    // P1 put behind cover during the intro, P2 left at the start). Start the jump watch from
+    // P1's start point, so that move counts as a jump on the first frame of play.
+    jf_last[0] = F32(START_POS + 0);
+    jf_last[1] = F32(START_POS + 4);
+    jf_last[2] = F32(START_POS + 8);
+    jf_valid = 1;
     U8(PLAYERS) = 2;
     if (!inv_p2_valid) {
         inv_init_p2();
@@ -1659,7 +1667,6 @@ static void itemdiag_frame(void) {
 // marker (+0x8A), room from the marker (func_8003CB80) and the room state (func_8003C58C).
 extern short func_8003CB80(int marker);
 extern void func_8003C58C(unsigned int player);
-static float jf_last[3];
 static void p2_put_behind_p1(float back) {
     unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
     float h = F32(a + 0x64);
