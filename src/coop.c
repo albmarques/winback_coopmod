@@ -80,6 +80,7 @@ static void lad_event(const char *tag, int a, int b);   // ladder diagnosis (log
 static void lad_log(const char *tag, const unsigned int *v, int n);
 static int hit_room_depth;
 static int hit_diag_lines;
+static unsigned int mg_obj[8];         // Passo 51b machine guns
 // Passo 47 diagnosis: after a P2 shot, the enemies near P2 and the rooms of everyone.
 static int shot_diag_lines = 99;
 static unsigned int shot_diag_tick;
@@ -595,6 +596,7 @@ RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
     }
     radar_map_reset = 1;
     hit_diag_lines = 0;
+    for (int i = 0; i < 8; i++) mg_obj[i] = 0;   // objects are rebuilt on each load
     spawn_guard = 90;
     spawn_guard_dist = -1.0f;
     lm_close_all();
@@ -1545,6 +1547,52 @@ RECOMP_HOOK("func_800D500C") void coop_trap_draw_begin(unsigned int obj) { trap_
 RECOMP_HOOK_RETURN("func_800D500C") void coop_trap_draw_end(void) { trap_end(); }
 RECOMP_HOOK("func_800D5884") void coop_beam_draw_begin(unsigned int obj) { trap_begin(obj, 1); }
 RECOMP_HOOK_RETURN("func_800D5884") void coop_beam_draw_end(void) { trap_end(); }
+
+// Passo 51b: the stage 3 mounted machine gun is an object of its own (update func_800D6044,
+// draw func_800D6028, type 2 in the log), not an enemy: it measures, aims and fires only at
+// D_801390C0 (P1) through func_800D6364 / func_800D65A4. Its update now runs with P2 as
+// player 1 (PLAYER_PTRS and ROOM_STATE swapped, as for the traps) when P2 is the living
+// player it should aim at: P2 clearly nearer (distance below 0.8 x P1's, squared 0.64), or
+// P1 dead. The choice is kept per gun until the other player is clearly nearer.
+static unsigned char mg_tgt[8];
+static int mg_swapped;
+RECOMP_HOOK("func_800D6044") void coop_mg_begin(unsigned int obj) {
+    mg_swapped = 0;
+    if (U8(PLAYERS) != 2 || !(U8(MODE) & 1) || recomp_get_config_u32("traps") != 0) return;
+    if (U32(PLAYER_PTRS) != SLOT0_DATA || obj < 0x80000000u || obj >= 0x80800000u) return;
+    unsigned int d = U32(obj + 0x2C);
+    if (d < 0x80000000u || d >= 0x80800000u) return;
+    int i, slot = -1;
+    for (i = 0; i < 8; i++) if (mg_obj[i] == obj) { slot = i; break; }
+    if (slot < 0) {
+        for (i = 0; i < 8; i++) if (mg_obj[i] == 0) { slot = i; break; }
+        if (slot < 0) slot = (int)((obj >> 4) & 7u);
+        mg_obj[slot] = obj;
+        mg_tgt[slot] = 0;
+    }
+    int hp0 = S8(SLOT0_DATA + 0x176B), hp1 = S8(SLOT1_DATA + 0x176B);
+    float x0 = F32(d + 0) - F32(SLOT0_DATA + 0), z0 = F32(d + 8) - F32(SLOT0_DATA + 8);
+    float x1 = F32(d + 0) - F32(SLOT1_DATA + 0), z1 = F32(d + 8) - F32(SLOT1_DATA + 8);
+    float q0 = x0 * x0 + z0 * z0, q1 = x1 * x1 + z1 * z1;
+    int t = mg_tgt[slot];
+    if (hp1 <= 0) t = 0;
+    else if (hp0 <= 0) t = 1;
+    else if (t == 0 && q1 < q0 * 0.64f) t = 1;
+    else if (t == 1 && q0 < q1 * 0.64f) t = 0;
+    if (t != mg_tgt[slot] && recomp_get_config_u32("log") != 0) {
+        unsigned int v[4] = { obj, (unsigned int)t, (unsigned int)(int)spawn_sqrt(q0), (unsigned int)(int)spawn_sqrt(q1) };
+        lad_log("mg_target", v, 4);
+    }
+    mg_tgt[slot] = (unsigned char)t;
+    if (!t) return;
+    trap_swap_players();
+    mg_swapped = 1;
+}
+RECOMP_HOOK_RETURN("func_800D6044") void coop_mg_end(void) {
+    if (!mg_swapped) return;
+    mg_swapped = 0;
+    trap_swap_players();
+}
 
 static void ai_frame(void);
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {

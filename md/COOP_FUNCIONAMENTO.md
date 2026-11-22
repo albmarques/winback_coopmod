@@ -1062,3 +1062,11 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Relato:** a metralhadora montada (ninho de sacos de areia) do stage 3 não reage ao P2.
 - O código dela ainda não foi identificado: pode ser um inimigo comum (`func_8002C830` → `func_800337A8`) num estado de metralhadora, ou um objeto próprio que mira em `D_801390C0` (P1).
 - **Este build só adiciona log:** junto com `p2_state`, uma vez por segundo, até 8 linhas `coop: lad near_p2` com os personagens a menos de 1500 unidades do P2 (lista `D_801788F0`, próximo em `+0x1C`, dados em `+0x2C`): objeto, função de atualização (`+0x24`), tipo (`+0x92`), sala (`+0x8E`), ação (`+0x16EC`), HP, distância ao P2, distância ao P1 e função de desenho (`+0x28`).
+
+### Passo 51b: correção da metralhadora (v0.3.31)
+
+- **O log mostrou:** perto do P2 havia dois personagens: `8015FF30`, com atualização `func_800D6044` e desenho `func_800D6028`, tipo 2, sem HP (a metralhadora); e `80160D30`, inimigo comum (`func_8002C830`), tipo 4, que passa para a ação 7 quando a metralhadora atira (o atirador). Enquanto isso só o P1 perdeu HP (48 → 38 → 18).
+- **Código:** `func_800D6044` mede a distância, mira e atira só em `D_801390C0` (P1), por meio de `func_800D6364` (distância e `func_80044160`) e `func_800D65A4` (mira com `func_8003F8D8`).
+- **Correção (`coop_mg_begin/end`):** a atualização da metralhadora roda com o P2 como jogador 1 (`PLAYER_PTRS` e `ROOM_STATE` trocados, como nas armadilhas) quando o alvo é o P2. O alvo é guardado por metralhadora (até 8): passa para o P2 quando ele fica claramente mais perto (distância menor que 0,8 da do P1) ou o P1 morre, e volta para o P1 do mesmo jeito. A lista é limpa a cada carga de fase.
+- Log: `coop: lad mg_target <objeto> <alvo> <dist P1> <dist P2>` quando o alvo muda.
+- A opção `traps` também liga/desliga isto.
