@@ -80,6 +80,7 @@ static void lad_event(const char *tag, int a, int b);   // ladder diagnosis (log
 static void lad_log(const char *tag, const unsigned int *v, int n);
 static int hit_room_depth;
 static int hit_diag_lines;
+static int itemdiag_ready;              // Passo 52 diagnosis
 static unsigned int mg_obj[8];         // Passo 51b machine guns
 // Passo 47 diagnosis: after a P2 shot, the enemies near P2 and the rooms of everyone.
 static int shot_diag_lines = 99;
@@ -596,6 +597,7 @@ RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
     }
     radar_map_reset = 1;
     hit_diag_lines = 0;
+    itemdiag_ready = 0;
     for (int i = 0; i < 8; i++) mg_obj[i] = 0;   // objects are rebuilt on each load
     spawn_guard = 90;
     spawn_guard_dist = -1.0f;
@@ -1594,12 +1596,41 @@ RECOMP_HOOK_RETURN("func_800D6044") void coop_mg_end(void) {
     trap_swap_players();
 }
 
+// Passo 52 diagnosis: where the game keeps key items. Logs every byte that changes in the
+// story state block 0x80158700..0x801587FF and the item array 0x80172500..0x801725EF
+// ("coop: lad itembyte <addr> <old> <new>"), at most 6 changes per byte (counters go quiet).
+#define ITEMDIAG_N 496
+static unsigned char itemdiag_last[ITEMDIAG_N];
+static unsigned char itemdiag_cnt[ITEMDIAG_N];
+static unsigned int itemdiag_addr(int i) { return i < 256 ? 0x80158700u + (unsigned int)i : 0x80172500u + (unsigned int)(i - 256); }
+static void itemdiag_frame(void) {
+    if (recomp_get_config_u32("log") == 0 || !coop_story_session() || !(U16(STATE) & 1)) return;
+    if (!itemdiag_ready) {
+        for (int i = 0; i < ITEMDIAG_N; i++) { itemdiag_last[i] = U8(itemdiag_addr(i)); itemdiag_cnt[i] = 0; }
+        itemdiag_ready = 1;
+        return;
+    }
+    int lines = 0;
+    for (int i = 0; i < ITEMDIAG_N; i++) {
+        unsigned char v = U8(itemdiag_addr(i));
+        if (v == itemdiag_last[i]) continue;
+        if (itemdiag_cnt[i] < 6 && lines < 12) {
+            itemdiag_cnt[i]++;
+            lines++;
+            unsigned int w[3] = { itemdiag_addr(i), itemdiag_last[i], v };
+            lad_log("itembyte", w, 3);
+        }
+        itemdiag_last[i] = v;
+    }
+}
+
 static void ai_frame(void);
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     drawing_split = 0;
     lm_tick++;
     ai_frame();
     lad_frame();
+    itemdiag_frame();
     fade_track_ladder();
     fade_draw_saved = -1;
     if (fade_split_active() && U8(FADE_LEVEL) > 0x80) {

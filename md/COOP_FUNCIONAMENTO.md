@@ -1070,3 +1070,10 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Correção (`coop_mg_begin/end`):** a atualização da metralhadora roda com o P2 como jogador 1 (`PLAYER_PTRS` e `ROOM_STATE` trocados, como nas armadilhas) quando o alvo é o P2. O alvo é guardado por metralhadora (até 8): passa para o P2 quando ele fica claramente mais perto (distância menor que 0,8 da do P1) ou o P1 morre, e volta para o P1 do mesmo jeito. A lista é limpa a cada carga de fase.
 - Log: `coop: lad mg_target <objeto> <alvo> <dist P1> <dist P2>` quando o alvo muda.
 - A opção `traps` também liga/desliga isto.
+
+## Passo 52: itens de chave na página ITEM do menu ao vivo (diagnóstico, v0.3.32)
+
+- **Pedido:** mostrar as chaves e outros itens na página ITEM do menu ao vivo (hoje ela só tem células vazias).
+- **O que falta saber:** onde o jogo guarda esses itens. A tabela de modelos `0x8010C610` tem os itens nos ids 4..8 (chaves e cartões) e 9..20 (outros), e a página de item do jogo escolhe o modelo por `func_80080960` (→ `D_8010C6E8`), mas a lista de itens que o jogador tem ainda não foi achada. Candidatos: o bloco de estado da história (`0x80158700..0x801587FF`) e o array `0x80172500` (15 × 0x10).
+- **Este build só adiciona log:** cada byte que muda nesses dois blocos gera `coop: lad itembyte <endereço> <antes> <depois>` (no máximo 6 vezes por byte, para contadores não encherem o log; zera a cada carga de fase).
+- **Teste:** pegar uma chave/cartão (e se possível usar numa porta) e mandar o log.
