@@ -80,6 +80,7 @@ static void lad_event(const char *tag, int a, int b);   // ladder diagnosis (log
 static void lad_log(const char *tag, const unsigned int *v, int n);
 static int hit_room_depth;
 static int hit_diag_lines;
+static int jf_valid;                       // Passo 56 jump follow
 static unsigned int spawn_prev_map = 0xFFFFu;   // map of the last load (Passo 54)
 static unsigned int spawn_load_flag;             // 0x8016A418 when the load started
 static int spawn_restored;                 // a continue / checkpoint restore came before this load
@@ -603,6 +604,7 @@ RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
     }
     radar_map_reset = 1;
     hit_diag_lines = 0;
+    jf_valid = 0;                                 // a load moves both: not a jump
     itemdiag_ready = 0;
     for (int i = 0; i < 8; i++) mg_obj[i] = 0;   // objects are rebuilt on each load
     spawn_guard = 90;
@@ -837,8 +839,18 @@ RECOMP_HOOK("func_8006B310") void coop_stage_players(void) {
         spawn_prev_map = cur_map;
         spawn_restored = 0;
         float h = F32(START_HEAD);
-        float dist = door ? 55.0f : -55.0f;
-        float ax = spawn_sin(h) * dist, az = spawn_sin(h + 1.5707963f) * dist;
+        float ax, az;
+        if (door) {
+            ax = spawn_sin(h) * 55.0f;
+            az = spawn_sin(h + 1.5707963f) * 55.0f;
+        } else {
+            // v0.3.36: "behind" put P2 back through the door when a continue restarts at a
+            // doorway (stage 2 checkpoint, v0.3.35 log). Sideways (to P1's left, as seen along
+            // the start heading) keeps both on the same side of a door and out of the line of
+            // what P1 faces; the bodies then separate sideways too.
+            ax = spawn_sin(h + 1.5707963f) * 45.0f;
+            az = -spawn_sin(h) * 45.0f;
+        }
         F32(START_POS + 12 + 0) += ax;
         F32(START_POS + 12 + 8) += az;
         F32(START_CAM + 12 + 0) += ax;
@@ -847,7 +859,7 @@ RECOMP_HOOK("func_8006B310") void coop_stage_players(void) {
             union { float f; unsigned int u; } hb, cx, cz;
             hb.f = h; cx.f = fx; cz.f = fz;
             unsigned int v[7] = { U16(0x8016A41A), U32(START_POS + 12 + 0), U32(START_POS + 12 + 8), hb.u, cx.u, cz.u, (unsigned int)door };
-            lad_log(door ? "p2_start_ahead" : "p2_start_behind", v, 7);
+            lad_log(door ? "p2_start_ahead" : "p2_start_side", v, 7);
         }
     }
     U8(PLAYERS) = 2;
@@ -1640,6 +1652,47 @@ static void itemdiag_frame(void) {
     }
 }
 
+// Passo 56: P1 moved by a cutscene. The intro of the shotgun boss (script 9 after the load)
+// puts P1 behind cover without func_80098F20, and P2 stayed at the start, out in the open. When
+// P1 jumps more than 250 units in one frame (not a ladder/vault of P1, P2 alive and not already
+// near), P2 is put 45 units behind P1 the way func_80098F20 does it: position, heading, zone
+// marker (+0x8A), room from the marker (func_8003CB80) and the room state (func_8003C58C).
+extern short func_8003CB80(int marker);
+extern void func_8003C58C(unsigned int player);
+static float jf_last[3];
+static void p2_put_behind_p1(float back) {
+    unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
+    float h = F32(a + 0x64);
+    F32(b + 0) = F32(a + 0) - spawn_sin(h) * back;
+    F32(b + 4) = F32(a + 4);
+    F32(b + 8) = F32(a + 8) - spawn_sin(h + 1.5707963f) * back;
+    F32(b + 0x64) = h;
+    U16(b + 0x8A) = U16(a + 0x8A);
+    S16(b + 0x8E) = func_8003CB80(U16(b + 0x8A) & 0xFFF);
+    func_8003C58C(b);
+}
+static void jump_follow_frame(void) {
+    unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
+    // Outside play (cutscenes, menus) or with the players swapped, keep the last position:
+    // the jump is seen on the first frame of play after the scene.
+    if (!coop_story_session() || !(U16(STATE) & 1) || U32(PLAYER_PTRS) != a) return;
+    float x = F32(a + 0), y = F32(a + 4), z = F32(a + 8);
+    if (jf_valid && recomp_get_config_u32("door_fix") == 0 && S8(b + 0x176B) > 0 && S8(a + 0x176B) > 0 &&
+        !((unsigned int)(lm_tick - lad_act_tick) < 400u && lad_act_player == 0)) {
+        float dx = x - jf_last[0], dy = y - jf_last[1], dz = z - jf_last[2];
+        float px = F32(b + 0) - x, pz = F32(b + 8) - z;
+        if (dx * dx + dy * dy + dz * dz > 250.0f * 250.0f && px * px + pz * pz > 300.0f * 300.0f) {
+            p2_put_behind_p1(45.0f);
+            if (recomp_get_config_u32("log") != 0) {
+                unsigned int v[4] = { U32(a + 0), U32(a + 8), U16(b + 0x8A), U16(b + 0x8E) };
+                lad_log("jump_follow", v, 4);
+            }
+        }
+    }
+    jf_last[0] = x; jf_last[1] = y; jf_last[2] = z;
+    jf_valid = 1;
+}
+
 static void ai_frame(void);
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     drawing_split = 0;
@@ -1647,6 +1700,7 @@ RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     ai_frame();
     lad_frame();
     itemdiag_frame();
+    jump_follow_frame();
     fade_track_ladder();
     fade_draw_saved = -1;
     if (fade_split_active() && U8(FADE_LEVEL) > 0x80) {

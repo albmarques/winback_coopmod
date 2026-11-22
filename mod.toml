@@ -2,7 +2,7 @@
 
 [manifest]
 id = "winback_coop"
-version = "0.3.35"
+version = "0.3.36"
 display_name = "Story Co-op"
 description = "Two-player Story co-op (controller 2) in the game's two-view split screen. Includes the two-player Death Match HUD, Engineer (model 58) for player 2, enemies that see and attack the nearer living player and stay visible in either player's room, and optional friendly fire. Also shows a partner radar in the lower right of each view. Revive is not done yet."
 short_description = "Two-player Story co-op (split screen, HUD, Engineer P2, enemy AI)."
@@ -107,7 +107,7 @@ default = "On"
 [[manifest.config_options]]
 id = "door_fix"
 name = "Door map change fix"
-description = "Co-op (spawn distance 0): P2 starts a little ahead of P1 after a door to another part of the stage (stage 2 double door), so the bodies do not push P2 back through the door, and a little behind P1 at stage starts, continues and checkpoints (away from what P1 faces, e.g. a boss). Script teleports of P1 (boss intros, scenes, doors inside a map; not ladders) also bring P2 just behind P1. Off: like before."
+description = "Co-op (spawn distance 0): P2 starts a little ahead of P1 after a door to another part of the stage (stage 2 double door), so the bodies do not push P2 back through the door, and to P1's side at stage starts, continues and checkpoints. When a script or a scene moves P1 (boss intros, doors inside a map; not ladders), P2 is brought just behind P1. Off: like before."
 type = "Enum"
 options = [ "On", "Off" ]
 default = "On"

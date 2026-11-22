@@ -1106,3 +1106,13 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Correção (`coop_cutscene_teleport_end`):** quando o teleportado é o P1 (índice 0, sem troca de jogadores), o P2 está vivo e não é escada/mureta do P1 (ação 23/9 nos últimos 400 quadros), o mod chama `func_80098F20(pos_id, 1)` e depois põe o P2 45 unidades atrás do P1 (pelo rumo do P1). Escadas continuam movendo só quem sobe.
 - Log: `coop: lad tele_follow <pos_id> <x> <z>`.
 - Faz parte da opção `door_fix` ("Off" desliga).
+
+## Passo 56: P2 longe do P1 depois da introdução do boss, e continue na porta (v0.3.36)
+
+- **Log do teste (v0.3.35):**
+  - nenhuma linha `teleport`/`tele_follow`: a introdução da chefe com a escopeta (script 9 logo após a carga) não usa `func_80098F20`; a cena move o P1 por outro caminho e o P2 fica parado no ponto de início (`p2_state` com a mesma posição o tempo todo);
+  - num continue que recomeça na porta dupla do stage 2, o P2 "atrás" (v0.3.34) caiu de novo do lado de fora (sala 4, marcador 0x0C) e ficou preso ali.
+- **Início de fase / continue / checkpoint:** o P2 agora começa **ao lado** do P1 (45 unidades à esquerda, pelo rumo inicial), não atrás. De lado os dois ficam do mesmo lado de uma porta e fora da linha do que o P1 encara; a colisão separa os dois de lado. Troca de mapa por porta continua com o P2 55 à frente. Log `p2_start_side` / `p2_start_ahead`.
+- **P1 movido por cena (`jump_follow_frame`):** a cada quadro de jogo (fora de cena, sem jogadores trocados) o mod compara a posição do P1 com a do último quadro de jogo. Se o P1 saltou mais de 250 unidades (cena, script; não escada/mureta do P1), o P2 está vivo e a mais de 300 do P1, o P2 é posto 45 unidades atrás do P1 do mesmo jeito que `func_80098F20` faz: posição, rumo `+0x64`, marcador `+0x8A`, sala `+0x8E` por `func_8003CB80(marcador & 0xFFF)` e `func_8003C58C(P2)`. A memória é zerada em cada carga de fase.
+- Log: `coop: lad jump_follow <x P1> <z P1> <marcador> <sala>`.
+- Tudo isso faz parte da opção `door_fix`.
