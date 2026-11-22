@@ -1693,13 +1693,22 @@ static void settle_set_anchor(void) {
 static void load_settle_frame(void) {
     unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
     if (settle_frames < 0 || !coop_story_session() || U32(PLAYER_PTRS) != a) return;
-    if (settle_frames == 0) { settle_set_anchor(); settle_frames = 1; }
     if (!(U16(STATE) & 1) || in_cutscene || U8(CUTSCENE_FLAG) != 0 || U8(CUTSCENE_CAM) != 0 ||
         (U16(SCRIPT_FLAGS) & 0x0010) != 0) return;
+    // v0.3.39: anchor on the first frame of play, not right after the load: the players are
+    // only placed later in the load, so the early anchor saw P2 "move" and the check stopped.
+    if (settle_frames == 0) { settle_set_anchor(); settle_frames = 1; return; }
     if (++settle_frames > 900) { settle_frames = -1; return; }
     if (recomp_get_config_u32("door_fix") != 0 || S8(a + 0x176B) <= 0 || S8(b + 0x176B) <= 0) return;
     float mx = F32(b + 0) - settle_anchor[0], mz = F32(b + 8) - settle_anchor[1];
-    if (mx * mx + mz * mz > 40.0f * 40.0f) { settle_frames = -1; return; }   // P2 is playing: stop
+    if (mx * mx + mz * mz > 40.0f * 40.0f) {                                // P2 is playing: stop
+        settle_frames = -1;
+        if (recomp_get_config_u32("log") != 0) {
+            unsigned int v[2] = { U32(b + 0), U32(b + 8) };
+            lad_log("settle_stop", v, 2);
+        }
+        return;
+    }
     float px = F32(b + 0) - F32(a + 0), pz = F32(b + 8) - F32(a + 8);
     if (px * px + pz * pz <= 500.0f * 500.0f) return;
     p2_put_behind_p1(45.0f);
@@ -1722,7 +1731,7 @@ static void jump_follow_frame(void) {
         float px = F32(b + 0) - x, pz = F32(b + 8) - z;
         if (dx * dx + dy * dy + dz * dz > 250.0f * 250.0f && px * px + pz * pz > 300.0f * 300.0f) {
             p2_put_behind_p1(45.0f);
-            if (settle_frames > 0) settle_set_anchor();
+            if (settle_frames > 0) settle_frames = 0;   // re-anchor on the next frame of play
             if (recomp_get_config_u32("log") != 0) {
                 unsigned int v[4] = { U32(a + 0), U32(a + 8), U16(b + 0x8A), U16(b + 0x8E) };
                 lad_log("jump_follow", v, 4);

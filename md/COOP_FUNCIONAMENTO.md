@@ -1127,3 +1127,8 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Log do teste (v0.3.37):** na carga do stage 5 a introdução chama `func_80098F20(4, 0)`; o mod levou o P2 junto (`tele_follow`) para o ponto 4. Depois a introdução continuou movendo o P1 **aos poucos** (vários passos curtos, marcadores 0x99 → 0x91 → 0x92 → 0x36 … → 0x3F), sem nenhum salto de mais de 250 unidades, e o P1 terminou longe do P2 (P2 parado em 5000/8845, P1 em 5975/6019).
 - **Correção (`load_settle_frame`):** nos primeiros 900 quadros de jogo depois de uma carga (fora de cena), enquanto o P2 não se mexeu por conta própria desde que foi posto (até 40 unidades do ponto onde a carga, um teleporte ou a própria correção o deixou) e está a mais de 500 do P1, o P2 é posto 45 atrás do P1 (mesmo jeito do `jump_follow`). Se o P2 andar por conta própria, a correção para naquela carga.
 - Log: `coop: lad settle_follow <x P1> <z P1> <marcador> <sala>`.
+
+### Passo 56d: a verificação parava antes de começar (v0.3.39)
+
+- **Teste da v0.3.38:** no stage 5 o P2 continuou longe. O ponto de referência do P2 ("onde ele foi posto") era gravado no primeiro quadro depois da carga, antes de o jogo posicionar os jogadores; quando o jogo punha o P2 no lugar, o mod entendia que ele tinha andado sozinho e desligava a verificação.
+- **Correção:** a referência agora é gravada no primeiro quadro **de jogo** (fora de cena) depois da carga ou do teleporte. Log novo `coop: lad settle_stop <x> <z>` quando a verificação para porque o P2 andou.
