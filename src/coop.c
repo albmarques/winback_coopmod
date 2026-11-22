@@ -77,6 +77,10 @@ static unsigned char c2e4_swapped;
 static unsigned char be18_swapped;
 static int e1e0_mode;
 static void lad_event(const char *tag, int a, int b);   // ladder diagnosis (log)
+static void lad_log(const char *tag, const unsigned int *v, int n);
+// Passo 47 diagnosis: after a P2 shot, the enemies near P2 and the rooms of everyone.
+static int shot_diag_lines = 99;
+static unsigned int shot_diag_tick;
 static int tele_idx;
 
 static int story_play(void) {
@@ -558,7 +562,35 @@ static float spawn_sqrt(float v) {
     return r;
 }
 
+// sin without libm: range-reduce to [-pi, pi], then a 9th-order Taylor series.
+static float spawn_sin(float x) {
+    const float pi = 3.14159265f, tau = 6.28318531f;
+    for (int i = 0; i < 8 && x > pi; i++) x -= tau;
+    for (int i = 0; i < 8 && x < -pi; i++) x += tau;
+    if (x > pi * 0.5f) x = pi - x;
+    else if (x < -pi * 0.5f) x = -pi - x;
+    float x2 = x * x;
+    return x * (1.0f - x2 / 6.0f * (1.0f - x2 / 20.0f * (1.0f - x2 / 42.0f * (1.0f - x2 / 72.0f))));
+}
+
+// Passo 48: a door that loads another map (stage 2 double door) gave both players the same HP
+// (in the log P1 went from 0x26 to P2's 0x14). The HP of both are kept here and, on the first
+// frame of play, put back if the game wrote one value for both that is one of the two saved
+// ones. A refill (continue, new stage: a value that is neither) is left alone.
+static int hp_keep_pending;
+static signed char hp_keep[2];
+
 RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
+    hp_keep_pending = 0;
+    if (coop_story_session() && U8(PLAYERS) == 2) {
+        hp_keep[0] = S8(SLOT0_DATA + 0x176B);
+        hp_keep[1] = S8(SLOT1_DATA + 0x176B);
+        hp_keep_pending = (hp_keep[0] > 0 && hp_keep[1] > 0 && hp_keep[0] != hp_keep[1]);
+    }
+    if (recomp_get_config_u32("log") != 0) {
+        unsigned int v[2] = { U16(0x8016A41A), U16(0x8016A418) };
+        lad_log("stage_load", v, 2);
+    }
     radar_map_reset = 1;
     spawn_guard = 90;
     spawn_guard_dist = -1.0f;
@@ -773,6 +805,28 @@ RECOMP_HOOK("func_8006B310") void coop_stage_players(void) {
     F32(START_CAM + 12 + 0) = F32(START_CAM + 0) + spawn_side_x * off;
     F32(START_CAM + 12 + 4) = F32(START_CAM + 4);
     F32(START_CAM + 12 + 8) = F32(START_CAM + 8) + spawn_side_z * off;
+    // Door map changes (stage 2 double door, Passo 46d): with spawn_distance 0 both players start
+    // on the same spot in the doorway and the body collision pushes them apart, often P2 back
+    // through the door into the scrap of the old side that the new map keeps. Start P2 a bit
+    // ahead instead, along the start camera's forward (camera -> player), i.e. into the room.
+    if (off <= 0.0f && recomp_get_config_u32("door_fix") == 0) {
+        // v0.3.23: the start camera does not always look into the room (on the way back out of
+        // the stage 2 building it looked inwards, and P2 started inside). The start heading is
+        // the way the player faces after the door: 0 = +Z, pi = -Z (seen in the log on both
+        // sides of the double door), so "ahead" = (sin h, cos h).
+        float h = F32(START_HEAD);
+        float ax = spawn_sin(h) * 55.0f, az = spawn_sin(h + 1.5707963f) * 55.0f;
+        F32(START_POS + 12 + 0) += ax;
+        F32(START_POS + 12 + 8) += az;
+        F32(START_CAM + 12 + 0) += ax;
+        F32(START_CAM + 12 + 8) += az;
+        if (recomp_get_config_u32("log") != 0) {
+            union { float f; unsigned int u; } hb, cx, cz;
+            hb.f = h; cx.f = fx; cz.f = fz;
+            unsigned int v[6] = { U16(0x8016A41A), U32(START_POS + 12 + 0), U32(START_POS + 12 + 8), hb.u, cx.u, cz.u };
+            lad_log("p2_start_ahead", v, 6);
+        }
+    }
     U8(PLAYERS) = 2;
     if (!inv_p2_valid) {
         inv_init_p2();
@@ -1071,6 +1125,7 @@ static void coop_friendly_fire(void) {
         if (shots <= 0 || shots > 3 || recomp_get_config_u32("friendly_fire") != 0) continue;
         if (recomp_get_config_u32("log") != 0) {
             winback_mod_log(k ? "coop: shot by P2" : "coop: shot by P1");
+            if (k) { shot_diag_lines = 0; shot_diag_tick = lm_tick; }   // Passo 47 diagnosis
             if ((unsigned int)(lm_tick - ff_scan_seen_tick[k]) > 3u) {
                 // diagnosis: how far from the shooter the closest ray started, and how many rays
                 union { float f; unsigned int u; } nd;
@@ -1150,7 +1205,56 @@ static void lad_log(const char *tag, const unsigned int *v, int n) {
 
 static int lad_someone_on(void) {
     unsigned short a0 = U16(SLOT0_DATA + 0x16EC), a1 = U16(SLOT1_DATA + 0x16EC);
-    return a0 == 23 || a0 == 9 || a1 == 23 || a1 == 9;
+    return a0 == 23 || a0 == 9 || a1 == 23 || a1 == 9 ||
+           a0 == 12 || a0 == 13 || a1 == 12 || a1 == 13;   // doors too (stage 2 double door diagnosis)
+}
+
+// Door / room diagnosis (option log): one line whenever a player's room, sub-room or zone
+// marker changes ("coop: lad rooms"), and the flag bytes +0x14..+0x17 of every room of the
+// room table (0x801D3750, 0x58 per room, count 0x8016A396) whenever any of them changes
+// ("coop: lad rflags"), to see whether a door switches rooms on or off for both players.
+static unsigned int door_last_room[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
+static unsigned short door_last_mark[2] = { 0xFFFF, 0xFFFF };
+static unsigned int door_last_hash = 0xFFFFFFFFu;
+
+static void door_rooms_log(void) {
+    if (recomp_get_config_u32("log") == 0 || !coop_story_session()) return;
+    int changed = 0;
+    for (int k = 0; k < 2; k++) {
+        unsigned int d = k ? SLOT1_DATA : SLOT0_DATA;
+        if (U32(ROOM_STATE + k * 4) != door_last_room[k] || U16(d + 0x8A) != door_last_mark[k]) changed = 1;
+    }
+    if (changed) {
+        unsigned int v[11];
+        for (int k = 0; k < 2; k++) {
+            unsigned int d = k ? SLOT1_DATA : SLOT0_DATA;
+            door_last_room[k] = U32(ROOM_STATE + k * 4);
+            door_last_mark[k] = U16(d + 0x8A);
+            v[k * 5 + 0] = door_last_room[k];             // room << 16 | sub-room
+            v[k * 5 + 1] = door_last_mark[k];             // zone marker
+            v[k * 5 + 2] = U16(d + 0x8E);                 // room in the player struct
+            v[k * 5 + 3] = U32(d + 0);                    // x (float bits)
+            v[k * 5 + 4] = U32(d + 8);                    // z (float bits)
+        }
+        v[10] = U16(0x8016A41A) | ((unsigned int)U16(0x8016A396) << 16);   // map id, room count
+        lad_log("rooms", v, 11);
+    }
+    int n = S16(0x8016A396);
+    if (n <= 0 || n > 64) return;
+    unsigned int h = 2166136261u;
+    for (int r = 0; r < n; r++) {
+        h ^= U32(0x801D3764u + (unsigned int)r * 0x58u);
+        h *= 16777619u;
+    }
+    if (h == door_last_hash) return;
+    door_last_hash = h;
+    for (int r0 = 0; r0 < n; r0 += 12) {
+        unsigned int v[13];
+        int c = 0;
+        v[c++] = (unsigned int)r0;
+        for (int r = r0; r < n && r < r0 + 12; r++) v[c++] = U32(0x801D3764u + (unsigned int)r * 0x58u);
+        lad_log("rflags", v, c);
+    }
 }
 
 static void lad_state(int k, const char *why) {
@@ -1171,6 +1275,7 @@ static void lad_state(int k, const char *why) {
 
 static void lad_frame(void) {
     if (recomp_get_config_u32("log") == 0 || !coop_story_session()) return;
+    door_rooms_log();
     int on = lad_someone_on();
     if (on) lad_watch = 240;
     if (!on && lad_watch <= 0) lad_cond_lines = 0;
@@ -1290,6 +1395,51 @@ RECOMP_HOOK_RETURN("func_8007A238") void coop_fade_draw_end(void) {
     }
 }
 
+// Passo 47: func_8004394C is the character test of a shot ray. In Story it only tests
+// characters whose zone/room (+0x8A/+0x8C/+0x8E) equals P1's room or sub-room (D_8016A410/12),
+// so with P1 and P2 in different rooms, P2's shots went through the enemies of P2's room and
+// those enemies' shots went through P2 (kicks, which don't use rays, still hit). When the
+// shooter (a0, or the object that fired it, a0 + 0x20) is P2, or a character standing in P2's
+// room and not in P1's, ROOM_STATE is swapped for the call, as for func_8003FCE4.
+static int hit_room_swapped;
+static int hit_room_of(unsigned int obj, int *is_p2) {
+    *is_p2 = 0;
+    if (obj < 0x80000000u || obj >= 0x80800000u) return -2;
+    unsigned int d = U32(obj + 0x2C);
+    if (d == SLOT1_DATA) { *is_p2 = 1; return 0; }
+    if (d == SLOT0_DATA) return -3;
+    if (d < 0x80000000u || d >= 0x80800000u) return -2;
+    return S16(d + 0x8E);
+}
+RECOMP_HOOK("func_8004394C") void coop_hit_room_begin(unsigned int shooter) {
+    hit_room_swapped = 0;
+    if (!coop_story_session() || U8(PLAYERS) != 2) return;
+    int p2 = 0, r = hit_room_of(shooter, &p2);
+    if (!p2 && r == -2 && shooter >= 0x80000000u && shooter < 0x80800000u) {
+        unsigned int parent = U32(shooter + 0x20);    // a bullet: its shooter
+        r = hit_room_of(parent, &p2);
+    }
+    if (r == -3) return;                              // P1 shot: the game's own rule
+    int swap = p2;
+    if (!swap && r >= 0) {
+        short a0 = S16(ROOM_STATE + 0), a1 = S16(ROOM_STATE + 2);
+        short b0 = S16(ROOM_STATE + 4), b1 = S16(ROOM_STATE + 6);
+        swap = (r != a0 && r != a1) && (r == b0 || r == b1);
+    }
+    if (!swap) return;
+    unsigned int t = U32(ROOM_STATE);
+    U32(ROOM_STATE) = U32(ROOM_STATE + 4);
+    U32(ROOM_STATE + 4) = t;
+    hit_room_swapped = 1;
+}
+RECOMP_HOOK_RETURN("func_8004394C") void coop_hit_room_end(void) {
+    if (!hit_room_swapped) return;
+    unsigned int t = U32(ROOM_STATE);
+    U32(ROOM_STATE) = U32(ROOM_STATE + 4);
+    U32(ROOM_STATE + 4) = t;
+    hit_room_swapped = 0;
+}
+
 static void ai_frame(void);
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     drawing_split = 0;
@@ -1301,6 +1451,19 @@ RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     if (fade_split_active() && U8(FADE_LEVEL) > 0x80) {
         fade_draw_saved = U8(FADE_LEVEL);
         U8(FADE_LEVEL) = 0x80;                   // keep the 3D of both views
+    }
+    if (coop_story_session() && hp_keep_pending && (U16(STATE) & 1) && U8(PLAYERS) == 2) {
+        hp_keep_pending = 0;
+        signed char n0 = S8(SLOT0_DATA + 0x176B), n1 = S8(SLOT1_DATA + 0x176B);
+        if (n0 == n1 && (n0 == hp_keep[0] || n0 == hp_keep[1])) {
+            S8(SLOT0_DATA + 0x176B) = hp_keep[0];
+            S8(SLOT1_DATA + 0x176B) = hp_keep[1];
+            if (recomp_get_config_u32("log") != 0) {
+                unsigned int v[3] = { (unsigned int)(unsigned char)n0, (unsigned int)(unsigned char)hp_keep[0],
+                                      (unsigned int)(unsigned char)hp_keep[1] };
+                lad_log("hp_keep", v, 3);
+            }
+        }
     }
     if (coop_story_session()) {
         // Spawn guard: if P2 appears on top of P1 right after a stage loads (something reset
@@ -1571,6 +1734,17 @@ static void enemy_begin_common(unsigned int obj, int boss) {
     }
     unsigned int e = U32(obj + 0x2C);
     cur_enemy = e;
+    if (e != 0 && shot_diag_lines < 6 && (unsigned int)(lm_tick - shot_diag_tick) < 3u &&
+        recomp_get_config_u32("log") != 0) {
+        float qx = F32(e + 0) - F32(SLOT1_DATA + 0), qz = F32(e + 8) - F32(SLOT1_DATA + 8);
+        if (qx * qx + qz * qz < 2500.0f * 2500.0f) {
+            shot_diag_lines++;
+            unsigned int v[10] = { e, U16(e + 0x8E), U16(e + 0x8A), (unsigned int)(unsigned char)S8(e + 0x176B),
+                                   U16(SLOT1_DATA + 0x8E), U16(SLOT1_DATA + 0x8A), U32(ROOM_STATE + 4),
+                                   U16(SLOT0_DATA + 0x8E), U32(ROOM_STATE + 0), U32(PLAYER_PTRS + 4) };
+            lad_log("p2shot_enemy", v, 10);
+        }
+    }
     unsigned int p0 = U32(PLAYER_PTRS);
     unsigned int p1 = U32(PLAYER_PTRS + 4);
     if (e == 0 || p0 == 0 || p1 == 0) {
@@ -2297,7 +2471,11 @@ static float tele_saved_head;
 static float tele_saved_cam[3];
 
 RECOMP_HOOK("func_80098F20") void coop_cutscene_teleport_begin(int pos_id, int player_idx) {
-    (void)pos_id;
+    if (recomp_get_config_u32("log") != 0 && coop_story_session()) {
+        unsigned int v[4] = { (unsigned int)pos_id, (unsigned int)player_idx, (unsigned int)trigger_player,
+                              (U32(PLAYER_PTRS) == SLOT1_DATA) ? 1u : 0u };
+        lad_log("teleport", v, 4);
+    }
     tele_idx = player_idx;
     tele_saved_p0 = 0;
     if (coop_story_session() && player_idx == 0 && U32(PLAYER_PTRS) == SLOT1_DATA) {

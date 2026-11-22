@@ -849,3 +849,59 @@ Existem dois modos possíveis de implementar a câmera de 1ª pessoa num hook no
   - no gancho de `func_80025F10`, o nível é mantido em 0x80 durante o desenho e restaurado no retorno, então as duas vistas continuam com 3D;
   - no gancho de `func_8007A238`, o nível vira 0 (o sprite de tela cheia não é desenhado) e o mod desenha a mesma cor com o mesmo nível só na metade de quem está na escada (`func_8007CBC8` + `func_8007CD50`, vista de cima y 0..120, vista de baixo y 120..240, de x -200 a 520 para cobrir as laterais do widescreen). O nível é restaurado no retorno.
 - Opção `ladder_fade`: "Climber only" (padrão) ou "Full screen" (como no jogo).
+
+## Passo 46: Porta dupla do stage 2 (diagnóstico, v0.3.19)
+
+- **Problema relatado:** no stage 2 há uma porta dupla em que, quando um jogador entra, o outro fica do lado de fora com o cenário quebrado (chão e paredes distantes somem, caixas ficam flutuando na neblina).
+- **Hipóteses:** (a) a porta é uma transição por script que usa `func_80098F20` (teleporte intra-fase) e, com a regra das escadas, só quem abriu é levado; (b) a porta liga/desliga salas na tabela de salas (`0x801D3750`, 0x58 bytes por sala, flags em `+0x14..+0x17`) para os dois jogadores; (c) a porta troca o mapa carregado (`0x8016A41A`).
+- **Este build só adiciona log** (opção `log`), sem mudar o comportamento:
+  - `lad rooms`: sempre que a sala, a sub-sala ou o marcador de zona (`+0x8A`) de um jogador muda: `ROOM_STATE` (sala << 16 | sub-sala), marcador, sala na struct (`+0x8E`), x e z (bits de float) de cada jogador, e `mapa | nº de salas << 16`.
+  - `lad rflags`: as flags `+0x14..+0x17` de todas as salas (12 por linha, a primeira coluna é o índice inicial) sempre que alguma muda.
+  - `lad teleport`: cada chamada de `func_80098F20` (pos_id, player_idx, `trigger_player`, P2 trocado como jogador 1).
+  - `lad stage_load`: cada carga de fase (`func_8004C438`) com o mapa e `0x8016A418`.
+  - As linhas de ação/eventos das escadas (`lad act`, `c2e4`, `script`, `e1e0`) agora também saem com as ações de porta 12/13.
+
+### Passo 46b: causa e correção (v0.3.20)
+
+- **O log mostrou:** a porta dupla não é teleporte nem desliga salas: ela troca o mapa da fase (`lad stage_load 00000002 00000001`, depois `00000001` ao voltar). Na carga, o jogo põe **os dois** no mesmo ponto da porta (P1 em 2100.3/1340.6, P2 em 2100.0/1340.0, sala 2). No quadro seguinte a colisão de corpo separa os dois: o P1 foi empurrado para dentro (sala 2) e o P2 para trás, pela porta, até a sala 4, o pedacinho do lado de fora (telhado com o corrimão) que o mapa novo mantém. O resto do lado de fora não existe nesse mapa, por isso a neblina e as caixas soltas. Só o jogador 1 dispara a troca de mapa, então o P2 parado ali não volta sozinho. Na volta (mapa 1) aconteceu o mesmo ao contrário.
+- **Correção (`door_fix_frame`, chamada em `coop_draw_begin`):** a cada carga de fase (`func_8004C438`), no primeiro quadro de jogo o mod guarda o ponto de início (média das posições) e a sala dos dois. Nos 60 quadros seguintes, se um jogador sair da sala de início e o outro continuar nela (e já tiver andado pelo menos 4 unidades), quem saiu é colocado 45 unidades atrás do parceiro, na linha do ponto de início até o parceiro (ou seja, mais para dentro da sala nova). Age uma vez por carga.
+- Log: `coop: lad door_fix <quem saiu> <sala de início> <sala para onde foi> <distância>`.
+- Opção `door_fix` ("On" padrão / "Off").
+
+### Passo 46c: a vista do P2 continuava "lá fora" (v0.3.21)
+
+- **Teste da v0.3.20:** o P2 foi colocado certo, ao lado do P1 no corredor (a vista do P1 mostra os dois lá dentro), mas a vista do P2 continuou desenhando só o telhado e a neblina, agora com os dois personagens nela.
+- **Causa:** a sala do jogador não é calculada pela posição; ela muda quando o jogador atravessa uma passagem. Movido através da parede, o P2 continuou com a sala de fora (sala 4), e a vista dele desenha só a sala em que ele "está".
+- **Correção:** junto com a posição, quem foi movido recebe o estado de sala do parceiro: a entrada dele em `ROOM_STATE` (sala/sub-sala), o marcador de zona `+0x8A`, a sala `+0x8E` e `+0x90`.
+
+### Passo 46d: nova abordagem, P2 começa à frente (v0.3.22)
+
+- **Teste da v0.3.21:** a vista do P2 continuou quebrada e o P1 passou a controlar o P2 também. Copiar o estado de sala/marcador/`+0x90` de um jogador para o outro bagunçou o jogo; mover o jogador depois que ele já atravessou a porta não funciona.
+- **Removido:** todo o `door_fix_frame` das v0.3.20/0.3.21 (mover depois da carga e copiar sala).
+- **Agora o problema é evitado antes:** em `coop_stage_players` (`func_8006B310`), que define o ponto de início do P2 em cada carga de mapa (início de fase e portas de troca de mapa), com `spawn_distance` = 0 o P2 começa 55 unidades **à frente** do P1, na direção câmera → jogador do início (para dentro da sala nova), com a câmera dele deslocada igual. Os dois não começam sobrepostos, então a colisão de corpo não empurra ninguém pela porta, e a sala do P2 é a correta desde o começo (é o jogo que a define na carga).
+- Log: `coop: lad p2_start_ahead <mapa> <x> <z>` em cada carga.
+- Opção `door_fix` ("On" padrão / "Off" = os dois começam no mesmo ponto, como antes).
+
+### Passo 46e: direção "para dentro" pelo rumo do jogador (v0.3.23)
+
+- **Teste da v0.3.22:** entrar no prédio funcionou, mas ao sair o P2 começou do lado de dentro (no pedaço do prédio que o mapa de fora mantém). A câmera do ponto de início nem sempre olha para dentro da sala nova; na saída ela olhava para o prédio.
+- **Agora:** "à frente" vem do rumo inicial do jogador (`START_HEAD`, 0x8016A454), que é para onde ele fica virado depois da porta. Pelo log das duas cargas (mapa 2: rumo ≈ 2π e o P1 andou para +Z; mapa 1: rumo π e o P1 andou para −Z), o vetor é (sen h, cos h). O seno é calculado sem libm (`spawn_sin`: redução para [−π, π] e série de Taylor).
+- O log `coop: lad p2_start_ahead` agora traz também o rumo e a direção da câmera (bits de float), para conferir.
+
+## Passo 47: no mapa de dentro do prédio (stage 2), tiro do P2 não acerta inimigos e tiro dos inimigos não acerta o P2 (diagnóstico, v0.3.24)
+
+- **Relato:** depois de entrar pela porta dupla (v0.3.23), os tiros do P2 não fazem efeito nos inimigos e o P2 só toma dano de chute (contato), nunca de tiro.
+- **Hipótese principal:** o teste de tiro do jogo compara a sala (`+0x8E`) do atirador e do alvo; se a sala registrada do P2 não for a mesma dos inimigos, nenhum tiro entre eles conta, mas o chute (proximidade) conta.
+- **Este build só adiciona log:** a cada tiro do P2, até 6 linhas `coop: lad p2shot_enemy` para os inimigos a menos de 2500 unidades do P2: ponteiro do inimigo, sala `+0x8E`, marcador `+0x8A`, vida, sala e marcador do P2, `ROOM_STATE` do P2, sala do P1, `ROOM_STATE` do P1 e `PLAYER_PTRS[1]`. As linhas `lad rooms` (mudança de sala) continuam.
+
+### Passo 47b: correção (v0.3.25)
+
+- **Causa achada no código:** `func_8004394C` é o teste de personagens de um raio de tiro (chamado pelo código de tiro, p.ex. `0x800B93E0`, e por `0x80047B48`, `0x80044D30`, `0x80035460`). No modo Story (`D_8016A40E & 1`) ele só testa personagens cuja zona/sala (`+0x8A`, `+0x8C` ou `+0x8E`) seja a sala ou sub-sala **do P1** (`D_8016A410` / `D_8016A412`). Com o P1 e o P2 em salas diferentes, os tiros do P2 atravessavam os inimigos da sala do P2, e os tiros desses inimigos atravessavam o P2. O chute não usa raio, por isso continuava acertando. Não era específico da porta dupla: acontecia sempre que os dois estavam em salas diferentes.
+- **Correção (`coop_hit_room_begin/end`):** no co-op Story, se quem atira (`a0`, ou o objeto que o disparou em `a0 + 0x20`, no caso de projétil) é o P2, ou é um personagem que está na sala/sub-sala do P2 e não na do P1, o `ROOM_STATE` do P1 e do P2 é trocado durante a chamada (mesma técnica do `func_8003FCE4`) e desfeito no retorno. Tiros do P1 seguem a regra original.
+
+## Passo 48: HP igualado ao passar por porta de troca de mapa (v0.3.26)
+
+- **Relato:** ao sair por uma porta de troca de mapa, o HP de um dos jogadores caiu e ficou igual ao do outro. O log do Passo 46 já mostrava isso: antes da carga do mapa 2 o P1 tinha `hp 26` e o P2 `hp 14`; depois, os dois `hp 14`.
+- **Causa provável:** o jogo leva o HP de um mapa para o outro num valor único (feito para um jogador) e aplica o mesmo valor aos dois personagens na carga.
+- **Correção:** em `coop_stage_load` (`func_8004C438`) o mod guarda o HP dos dois (`+0x176B`). No primeiro quadro de jogo depois da carga, se o jogo deixou os dois com o mesmo valor e esse valor é um dos dois guardados, cada um volta ao seu HP. Se o valor novo não for nenhum dos guardados (continue, fase nova, recarga), nada é mexido. Só age quando os dois estavam vivos e com HP diferentes.
+- Log: `coop: lad hp_keep <valor que o jogo pôs> <HP P1> <HP P2>`.
