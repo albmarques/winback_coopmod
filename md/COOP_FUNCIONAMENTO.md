@@ -1077,3 +1077,16 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **O que falta saber:** onde o jogo guarda esses itens. A tabela de modelos `0x8010C610` tem os itens nos ids 4..8 (chaves e cartões) e 9..20 (outros), e a página de item do jogo escolhe o modelo por `func_80080960` (→ `D_8010C6E8`), mas a lista de itens que o jogador tem ainda não foi achada. Candidatos: o bloco de estado da história (`0x80158700..0x801587FF`) e o array `0x80172500` (15 × 0x10).
 - **Este build só adiciona log:** cada byte que muda nesses dois blocos gera `coop: lad itembyte <endereço> <antes> <depois>` (no máximo 6 vezes por byte, para contadores não encherem o log; zera a cada carga de fase).
 - **Teste:** pegar uma chave/cartão (e se possível usar numa porta) e mandar o log.
+
+## Passo 53: o boss foca demais no P1 (v0.3.33)
+
+- **Relato:** o boss não reconhece direito o P2 e fica quase só no P1.
+- **Causa:** a escolha de alvo dos bosses (`enemy_begin_common` com `boss = 1`, na atualização `func_800AD9F0`) é a mesma regra simples dos inimigos sem IA esperta: o boss só ia no P2 se o P2 estivesse bem mais perto (distância < 0,8 da do P1). Com os dois a distâncias parecidas, ficava sempre no P1. Toda a lógica do boss (estados em `func_800ADCF8` e os tratadores chamados por tabela) roda dentro dessa atualização, então segue a troca de `PLAYER_PTRS` feita pelo mod.
+- **Agora (`boss_pick_target`):** cada boss guarda um alvo e troca para o outro jogador quando:
+  - o alvo atual morre;
+  - o outro fica bem mais perto (< 0,8 da distância), depois de 1,5 s no alvo;
+  - o outro acertou o boss 3 vezes desde a última troca (vingança), depois de 2 s;
+  - passaram 8 s no mesmo alvo e o outro não está muito mais longe (< 1,5 × a distância).
+  - Ao aparecer, o boss começa no jogador mais perto.
+- Os acertos são contados em `coop_boss_hit_begin` (`boss_ai.h`) pela tarefa de arma que está rodando (`ai_bullet_owner`).
+- Log: `coop: lad boss_target <boss> <novo alvo> <quadros no alvo anterior>`.

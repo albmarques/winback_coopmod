@@ -1902,6 +1902,45 @@ RECOMP_HOOK_RETURN("func_800593EC") void coop_p2_model(void) {
 // smarter-enemy AI, whose state numbers don't apply to bosses.
 static void enemy_begin_common(unsigned int obj, int boss);
 
+// Passo 53: bosses split their attention. Before, a boss went for P2 only when P2 was much
+// nearer (distance < 0.8 x P1's), so with both at a similar range it stayed on P1. Now each boss
+// keeps a target and switches to the other player when:
+//  - the current target is dead;
+//  - the other player is much nearer (< 0.8 x the distance), after 1.5 s on the target;
+//  - the other player hit it 3 times since the last switch (revenge), after 2 s;
+//  - 8 s passed on the same target and the other one is not much farther (< 1.5 x).
+// Hits are counted in coop_boss_hit_begin (boss_ai.h) from the shooter's weapon task.
+static unsigned int boss_t_obj;
+static int boss_t_tgt;
+static unsigned int boss_t_since;
+static int boss_hits_by[2];
+static int boss_pick_target(unsigned int e, float d0, float d1) {
+    if (boss_t_obj != e) {                       // a new boss: start on the nearer one
+        boss_t_obj = e;
+        boss_t_tgt = (d1 < d0) ? 1 : 0;
+        boss_t_since = lm_tick;
+        boss_hits_by[0] = boss_hits_by[1] = 0;
+    }
+    int cur = boss_t_tgt, oth = 1 - cur;
+    float dc = cur ? d1 : d0, dn = cur ? d0 : d1;    // squared distances
+    unsigned int held = lm_tick - boss_t_since;      // drawn frames on the target
+    int sw = 0;
+    if (S8((cur ? SLOT1_DATA : SLOT0_DATA) + 0x176B) <= 0) sw = 1;
+    else if (held > 45u && dn < dc * 0.64f) sw = 1;
+    else if (held > 60u && boss_hits_by[oth] >= 3) sw = 1;
+    else if (held > 240u && dn < dc * 2.25f) sw = 1;
+    if (sw && S8((oth ? SLOT1_DATA : SLOT0_DATA) + 0x176B) > 0) {
+        boss_t_tgt = oth;
+        boss_t_since = lm_tick;
+        boss_hits_by[0] = boss_hits_by[1] = 0;
+        if (recomp_get_config_u32("log") != 0) {
+            unsigned int v[3] = { e, (unsigned int)oth, held };
+            lad_log("boss_target", v, 3);
+        }
+    }
+    return boss_t_tgt;
+}
+
 RECOMP_HOOK("func_800337A8") void coop_enemy_begin(unsigned int obj) {
     enemy_begin_common(obj, 0);
 }
@@ -1968,11 +2007,11 @@ static void enemy_begin_common(unsigned int obj, int boss) {
         float dz0 = F32(e + 8) - F32(p0 + 8);
         float d0 = dx0 * dx0 + dy0 * dy0 + dz0 * dz0;
 
-        int want_p1 = (d1 < d0 * 0.64f);
+        int want_p1 = boss ? boss_pick_target(e, d0, d1) : (d1 < d0 * 0.64f);
         if (ai_lv != 0 && ai_cur_idx >= 0) {
             // Smart / Elite: keep a target, take revenge on whoever shoots them.
             want_p1 = ai_pick_target(ai_cur_idx, e, p0, p1, d0, d1, ai_lv);
-        } else if (coop_difficulty() != 0) {
+        } else if (!boss && coop_difficulty() != 0) {
             // Hard / Brutal: enemies split their attention between the two players. Each enemy has
             // a preferred player; it goes for that one when they are in its room, otherwise the nearer.
             int pref = (int)(((e >> 4) ^ (e >> 9)) & 1);

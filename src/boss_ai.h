@@ -53,6 +53,10 @@ static int boss_tough_level(void) {
 
 RECOMP_HOOK("func_800AF368") void coop_boss_hit_begin(unsigned int d) {
     bh_obj = 0;
+    {   // Passo 53: who hit the boss (the weapon task running now), for its target choice
+        int k = ai_bullet_owner;
+        if ((k == 0 || k == 1) && boss_hits_by[k] < 100) boss_hits_by[k]++;
+    }
     int lv = boss_tough_level();
     if (lv == 0 || d < 0x80000000u || d >= 0x80800000u) return;
     int hp = S16(BOSS_HEALTH);
