@@ -1121,3 +1121,9 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 
 - **Log do teste (v0.3.36):** a luta começa numa carga de fase (mapa 4). Na carga os dois ficam no ponto de início (P1 em 5000/8900, P2 ao lado). A introdução põe o P1 em 5898/8420 (valores redondos, posição de script) **antes** do primeiro quadro de jogo; como a vigilância de saltos só começava no primeiro quadro de jogo, esse movimento não contava como salto, e o P2 ficou no ponto de início, mais perto da chefe (distâncias 0x2CA do P2 e 0x39C do P1).
 - **Correção:** em `coop_stage_players` a vigilância de saltos começa já com o ponto de início do P1 (`START_POS`). No primeiro quadro de jogo, o P1 deslocado pela introdução conta como salto e o P2 é levado para 45 atrás dele (`jump_follow`).
+
+### Passo 56c: stage 5, a introdução move o P1 aos poucos (v0.3.38)
+
+- **Log do teste (v0.3.37):** na carga do stage 5 a introdução chama `func_80098F20(4, 0)`; o mod levou o P2 junto (`tele_follow`) para o ponto 4. Depois a introdução continuou movendo o P1 **aos poucos** (vários passos curtos, marcadores 0x99 → 0x91 → 0x92 → 0x36 … → 0x3F), sem nenhum salto de mais de 250 unidades, e o P1 terminou longe do P2 (P2 parado em 5000/8845, P1 em 5975/6019).
+- **Correção (`load_settle_frame`):** nos primeiros 900 quadros de jogo depois de uma carga (fora de cena), enquanto o P2 não se mexeu por conta própria desde que foi posto (até 40 unidades do ponto onde a carga, um teleporte ou a própria correção o deixou) e está a mais de 500 do P1, o P2 é posto 45 atrás do P1 (mesmo jeito do `jump_follow`). Se o P2 andar por conta própria, a correção para naquela carga.
+- Log: `coop: lad settle_follow <x P1> <z P1> <marcador> <sala>`.

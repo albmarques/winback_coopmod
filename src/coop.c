@@ -82,6 +82,7 @@ static int hit_room_depth;
 static int hit_diag_lines;
 static int jf_valid;                       // Passo 56 jump follow
 static float jf_last[3];
+static int settle_frames;
 static unsigned int spawn_prev_map = 0xFFFFu;   // map of the last load (Passo 54)
 static unsigned int spawn_load_flag;             // 0x8016A418 when the load started
 static int spawn_restored;                 // a continue / checkpoint restore came before this load
@@ -606,6 +607,7 @@ RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
     radar_map_reset = 1;
     hit_diag_lines = 0;
     jf_valid = 0;                                 // a load moves both: not a jump
+    settle_frames = 0;                            // Passo 56c: check P2's place once play settles
     itemdiag_ready = 0;
     for (int i = 0; i < 8; i++) mg_obj[i] = 0;   // objects are rebuilt on each load
     spawn_guard = 90;
@@ -1678,6 +1680,36 @@ static void p2_put_behind_p1(float back) {
     S16(b + 0x8E) = func_8003CB80(U16(b + 0x8A) & 0xFFF);
     func_8003C58C(b);
 }
+// Passo 56c: after a load the intro can move P1 in many small scripted steps (stage 5 log),
+// which the jump watch does not see. For the first 900 frames of play after a load (scenes
+// excluded), while P2 has not moved by itself since it was placed (within 40 units of where the
+// load, a teleport or this check left it) and is more than 500 units from P1, P2 is put behind
+// P1. A player who walked away on purpose is left alone.
+static float settle_anchor[2];
+static void settle_set_anchor(void) {
+    settle_anchor[0] = F32(SLOT1_DATA + 0);
+    settle_anchor[1] = F32(SLOT1_DATA + 8);
+}
+static void load_settle_frame(void) {
+    unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
+    if (settle_frames < 0 || !coop_story_session() || U32(PLAYER_PTRS) != a) return;
+    if (settle_frames == 0) { settle_set_anchor(); settle_frames = 1; }
+    if (!(U16(STATE) & 1) || in_cutscene || U8(CUTSCENE_FLAG) != 0 || U8(CUTSCENE_CAM) != 0 ||
+        (U16(SCRIPT_FLAGS) & 0x0010) != 0) return;
+    if (++settle_frames > 900) { settle_frames = -1; return; }
+    if (recomp_get_config_u32("door_fix") != 0 || S8(a + 0x176B) <= 0 || S8(b + 0x176B) <= 0) return;
+    float mx = F32(b + 0) - settle_anchor[0], mz = F32(b + 8) - settle_anchor[1];
+    if (mx * mx + mz * mz > 40.0f * 40.0f) { settle_frames = -1; return; }   // P2 is playing: stop
+    float px = F32(b + 0) - F32(a + 0), pz = F32(b + 8) - F32(a + 8);
+    if (px * px + pz * pz <= 500.0f * 500.0f) return;
+    p2_put_behind_p1(45.0f);
+    settle_set_anchor();
+    if (recomp_get_config_u32("log") != 0) {
+        unsigned int v[4] = { U32(a + 0), U32(a + 8), U16(b + 0x8A), U16(b + 0x8E) };
+        lad_log("settle_follow", v, 4);
+    }
+}
+
 static void jump_follow_frame(void) {
     unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
     // Outside play (cutscenes, menus) or with the players swapped, keep the last position:
@@ -1690,6 +1722,7 @@ static void jump_follow_frame(void) {
         float px = F32(b + 0) - x, pz = F32(b + 8) - z;
         if (dx * dx + dy * dy + dz * dz > 250.0f * 250.0f && px * px + pz * pz > 300.0f * 300.0f) {
             p2_put_behind_p1(45.0f);
+            if (settle_frames > 0) settle_set_anchor();
             if (recomp_get_config_u32("log") != 0) {
                 unsigned int v[4] = { U32(a + 0), U32(a + 8), U16(b + 0x8A), U16(b + 0x8E) };
                 lad_log("jump_follow", v, 4);
@@ -1708,6 +1741,7 @@ RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     lad_frame();
     itemdiag_frame();
     jump_follow_frame();
+    load_settle_frame();
     fade_track_ladder();
     fade_draw_saved = -1;
     if (fade_split_active() && U8(FADE_LEVEL) > 0x80) {
@@ -2840,6 +2874,7 @@ RECOMP_HOOK_RETURN("func_80098F20") void coop_cutscene_teleport_end(void) {
         unsigned int v[3] = { (unsigned int)tele_pos_id, U32(SLOT1_DATA + 0), U32(SLOT1_DATA + 8) };
         lad_log("tele_follow", v, 3);
     }
+    settle_frames = 0;                            // re-anchor P2 where the teleport put it
 }
 
 // 11. Custom HUD with character portraits (Jean-Luc for P1, Engineer for P2) and slanted LIFE bar.
