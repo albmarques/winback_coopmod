@@ -2710,7 +2710,10 @@ static unsigned short tele_saved_id;
 static float tele_saved_head;
 static float tele_saved_cam[3];
 
+static int tele_pos_id, tele_follow_nested;
+extern void func_80098F20(int pos_id, int player_idx);
 RECOMP_HOOK("func_80098F20") void coop_cutscene_teleport_begin(int pos_id, int player_idx) {
+    if (!tele_follow_nested) tele_pos_id = pos_id;
     if (recomp_get_config_u32("log") != 0 && coop_story_session()) {
         unsigned int v[4] = { (unsigned int)pos_id, (unsigned int)player_idx, (unsigned int)trigger_player,
                               (U32(PLAYER_PTRS) == SLOT1_DATA) ? 1u : 0u };
@@ -2755,6 +2758,26 @@ RECOMP_HOOK_RETURN("func_80098F20") void coop_cutscene_teleport_end(void) {
         F32(START_CAM + 4) = tele_saved_cam[1];
         F32(START_CAM + 8) = tele_saved_cam[2];
         tele_saved_p0 = 0;
+        return;
+    }
+    // Passo 55: a script teleport of P1 that is not a ladder/vault (boss intros, scripted
+    // scenes, doors inside a map) left P2 where it was: at the machine-gun boss P2 stayed out in
+    // the open near the boss while P1 was put behind cover. The same teleport is now run for
+    // player index 1 (the game's own code: position, heading, zone marker, room), and P2 is put
+    // 45 units behind P1. Ladders keep moving only the climber.
+    if (tele_follow_nested || tele_idx != 0 || U32(PLAYER_PTRS) != SLOT0_DATA || U8(PLAYERS) != 2) return;
+    if (recomp_get_config_u32("door_fix") != 0) return;
+    if ((unsigned int)(lm_tick - lad_act_tick) < 400u && lad_act_player == 0) return;   // P1's ladder/vault
+    if (S8(SLOT1_DATA + 0x176B) <= 0) return;
+    tele_follow_nested = 1;
+    func_80098F20(tele_pos_id, 1);
+    tele_follow_nested = 0;
+    float h = F32(SLOT0_DATA + 0x64);
+    F32(SLOT1_DATA + 0) = F32(SLOT0_DATA + 0) - spawn_sin(h) * 45.0f;
+    F32(SLOT1_DATA + 8) = F32(SLOT0_DATA + 8) - spawn_sin(h + 1.5707963f) * 45.0f;
+    if (recomp_get_config_u32("log") != 0) {
+        unsigned int v[3] = { (unsigned int)tele_pos_id, U32(SLOT1_DATA + 0), U32(SLOT1_DATA + 8) };
+        lad_log("tele_follow", v, 3);
     }
 }
 

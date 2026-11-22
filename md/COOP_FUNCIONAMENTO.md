@@ -1097,3 +1097,12 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Causa:** desde a v0.3.22/23 (Passo 46d/e), com `spawn_distance` = 0 o P2 começava 55 unidades **à frente** do P1 em toda carga de mapa. Em início de fase, continue e checkpoint, o ponto de início costuma olhar para os inimigos, então o P2 começava mais perto do boss.
 - **Agora:** em `coop_stage_players` o mod sabe se a carga é uma troca de mapa por porta: a carga foi pedida pelo script com `0x8016A418` = 1 (lido no início de `func_8004C438`), o mapa (`0x8016A41A`) é diferente do da carga anterior e não houve continue/checkpoint antes (`spawn_restored`, marcado em `coop_checkpoint_restore_end`; jogo novo zera a memória em `coop_inv_new_game`). Só nesse caso o P2 começa 55 à frente (como na porta dupla). Nos outros casos começa 55 **atrás** do P1 (rumo inicial invertido), longe do que o P1 encara.
 - Log: `coop: lad p2_start_ahead` ou `coop: lad p2_start_behind` (o último campo diz se foi porta).
+
+## Passo 55: P2 fica em posição ruim no início da luta de boss (v0.3.35)
+
+- **Relato (print):** na luta da chefe com a escopeta, o P1 começa atrás de uma pilastra e o P2 lá no meio, exposto e perto da chefe.
+- **Causa:** a introdução do boss teleporta o P1 por script (`func_80098F20(pos_id, 0)`) para a posição de início da luta. O P2 não era movido e ficava onde estava antes da cena. O mod só tratava esse teleporte para escadas (mover só quem sobe).
+- **Código do teleporte:** `func_80098F20(pos_id, idx)` lê a posição/rumo/marcador do ponto `pos_id` (`func_800513FC`), grava nos dados de início do jogador `idx` (`0x8016A424 + idx*12`, etc.) e aplica em `D_801390C0[idx]`: posição, rumo `+0x64`, marcador `+0x8A`, sala `+0x8E` (`func_8003CB80`) e o estado de sala (`func_8003C58C`). Ou seja, com `idx = 1` ele teleporta o P2 do jeito certo, inclusive a sala.
+- **Correção (`coop_cutscene_teleport_end`):** quando o teleportado é o P1 (índice 0, sem troca de jogadores), o P2 está vivo e não é escada/mureta do P1 (ação 23/9 nos últimos 400 quadros), o mod chama `func_80098F20(pos_id, 1)` e depois põe o P2 45 unidades atrás do P1 (pelo rumo do P1). Escadas continuam movendo só quem sobe.
+- Log: `coop: lad tele_follow <pos_id> <x> <z>`.
+- Faz parte da opção `door_fix` ("Off" desliga).
