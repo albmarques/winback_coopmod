@@ -1031,3 +1031,11 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 | `func_800D3C2C` | `0x800D3C2C` (`0x7B0`) | Calcula `+0x0158` e `+0x0154` durante o auto-aim sobre o inimigo travado em `0x80138EF8[idx]`. |
 | `func_8005DC88` / `func_800295B4` | `0x8005DC88` / `0x800295B4` | Handler da ação 3 (mira/tiro): em `0x8005E544` lê a matriz da mão `player + 0x1698`, aplica o offset do cano (`0x8011D470`/`0x8011D472`) e dispara o projétil/raycast do jogador via `func_800295B4` (ou foguete via `func_80094B40`). |
 
+
+## Passo 49: controle do P2 não funciona desde o começo da fase (diagnóstico, v0.3.27)
+
+- **Relato (v0.3.26):** desde o início da fase o P2 não responde.
+- **Suspeitas:** (a) a troca de `ROOM_STATE` do Passo 47b ficar presa se `func_8004394C` for chamada dentro dela mesma (o sinalizador único da v0.3.25 se perdia na chamada interna e a troca nunca era desfeita); (b) o P2 começar 55 unidades à frente (Passo 46d/e) dentro de uma parede no início da fase.
+- **Mudanças:** a troca de `ROOM_STATE` agora guarda um sinalizador por nível de chamada (até 8) e desfaz na ordem certa; opção nova `shot_rooms` ("On"/"Off") para desligar só essa correção.
+- **Log novo:** uma vez por segundo, `coop: lad p2_state` com a ação e o sub-estado do P2, as flags `+0xF4` e `+0x88`, a posição, o `ROOM_STATE` dos dois, `PLAYERS` e a profundidade da troca de sala (+0x100 se o P2 estiver como jogador 1).
+- **Teste para isolar:** com `door_fix` em "Off" (P2 nasce no mesmo ponto do P1) e depois com `shot_rooms` em "Off".

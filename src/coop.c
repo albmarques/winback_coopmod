@@ -78,6 +78,7 @@ static unsigned char be18_swapped;
 static int e1e0_mode;
 static void lad_event(const char *tag, int a, int b);   // ladder diagnosis (log)
 static void lad_log(const char *tag, const unsigned int *v, int n);
+static int hit_room_depth;
 // Passo 47 diagnosis: after a P2 shot, the enemies near P2 and the rooms of everyone.
 static int shot_diag_lines = 99;
 static unsigned int shot_diag_tick;
@@ -897,6 +898,13 @@ static void log_status(void) {
     put_hex(line + 66, p1 ? U16(p1 + 0x92) : 0, 4);
     put_hex(line + 75, U16(0x8016A41A), 4);
     winback_mod_log(line);
+    // Passo 49 diagnosis: P2's state once a second (action, sub-state, flags +0xF4, +0x88,
+    // position, room state of both, PLAYERS, the shot-room nesting depth).
+    unsigned int v[10] = { U16(SLOT1_DATA + 0x16EC), U8(SLOT1_DATA + 0x16F0), U32(SLOT1_DATA + 0xF4),
+                           U16(SLOT1_DATA + 0x88), U32(SLOT1_DATA + 0), U32(SLOT1_DATA + 8),
+                           U32(ROOM_STATE + 0), U32(ROOM_STATE + 4), U8(PLAYERS),
+                           (unsigned int)hit_room_depth | ((U32(PLAYER_PTRS) == SLOT1_DATA) ? 0x100u : 0u) };
+    lad_log("p2_state", v, 10);
 }
 
 static void clear_player_targets(void);
@@ -1401,7 +1409,7 @@ RECOMP_HOOK_RETURN("func_8007A238") void coop_fade_draw_end(void) {
 // those enemies' shots went through P2 (kicks, which don't use rays, still hit). When the
 // shooter (a0, or the object that fired it, a0 + 0x20) is P2, or a character standing in P2's
 // room and not in P1's, ROOM_STATE is swapped for the call, as for func_8003FCE4.
-static int hit_room_swapped;
+static unsigned char hit_room_swap[8];
 static int hit_room_of(unsigned int obj, int *is_p2) {
     *is_p2 = 0;
     if (obj < 0x80000000u || obj >= 0x80800000u) return -2;
@@ -1412,8 +1420,9 @@ static int hit_room_of(unsigned int obj, int *is_p2) {
     return S16(d + 0x8E);
 }
 RECOMP_HOOK("func_8004394C") void coop_hit_room_begin(unsigned int shooter) {
-    hit_room_swapped = 0;
-    if (!coop_story_session() || U8(PLAYERS) != 2) return;
+    int lvl = hit_room_depth++;
+    if (lvl < 8) hit_room_swap[lvl] = 0;
+    if (lvl >= 8 || !coop_story_session() || U8(PLAYERS) != 2 || recomp_get_config_u32("shot_rooms") != 0) return;
     int p2 = 0, r = hit_room_of(shooter, &p2);
     if (!p2 && r == -2 && shooter >= 0x80000000u && shooter < 0x80800000u) {
         unsigned int parent = U32(shooter + 0x20);    // a bullet: its shooter
@@ -1430,14 +1439,16 @@ RECOMP_HOOK("func_8004394C") void coop_hit_room_begin(unsigned int shooter) {
     unsigned int t = U32(ROOM_STATE);
     U32(ROOM_STATE) = U32(ROOM_STATE + 4);
     U32(ROOM_STATE + 4) = t;
-    hit_room_swapped = 1;
+    hit_room_swap[lvl] = 1;
 }
 RECOMP_HOOK_RETURN("func_8004394C") void coop_hit_room_end(void) {
-    if (!hit_room_swapped) return;
+    if (hit_room_depth <= 0) { hit_room_depth = 0; return; }
+    int lvl = --hit_room_depth;
+    if (lvl >= 8 || !hit_room_swap[lvl]) return;
+    hit_room_swap[lvl] = 0;
     unsigned int t = U32(ROOM_STATE);
     U32(ROOM_STATE) = U32(ROOM_STATE + 4);
     U32(ROOM_STATE + 4) = t;
-    hit_room_swapped = 0;
 }
 
 static void ai_frame(void);
