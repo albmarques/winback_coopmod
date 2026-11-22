@@ -682,130 +682,10 @@ Cada imagem de mapa agrupa as linhas por **sala** (bloco "floors": `s16 início,
 ### Passo 43: Correção da Escada para o Player 2 (Engineer) (`0x8010E0F8` / Evento 15)
 - **Sintoma:** Quando o Player 2 (Engineer) descia ou subia uma escada, a cutscene da escada não iniciava e ele ficava preso flutuando no ar na animação inicial da escada. Com o Player 1 (Jean-Luc) funcionava normalmente.
 - **Causa descoberta na ROM:**
-  1. Ao apertar Ação perto da escada (`0x800A9C18` dentro de `func_800A8ED0`), o jogo **não** enfileira evento via `func_8004DE48`. Ele chama `func_8009C860(id)` $\rightarrow$ `func_8009C2E4(30, id)` apenas para validar se a escada está liberada e coloca o jogador na ação `+0x16EC = 23` (subestado `+0x16F0 = 11` para descer, `12` para subir). Como `func_8004DE48` não era chamada, `trigger_player` permanecia `0` (Jean-Luc).
+  1. Ao apertar Ação perto da escada (`0x800A9C18` dentro de `func_800A8ED0`), o jogo **não** enfileira evento via `func_8004DE48`. Ele chama `func_8009C860(id)` $\rightarrow$ `func_8009C2E4(30, id)` apenas para validar se a escada está liberada e coloca o jogador na ação `+0x16EC = 23` (subestado `+0x16F0 = 11` para subir, `12` para descer). Como `func_8004DE48` não era chamada, `trigger_player` permanecia `0` (Jean-Luc).
   2. No handler da ação `23` (`func_800626E0`), quando a animação `+0x16C8` passa do quadro `18.0f`, o jogo escreve `U16(0x8010E0F8) = 1` (`0x80062744`, mesmo flag usado pela ação `9` de pular mureta em `0x80060550`). A partir do quadro `21.0f` (`0x80062760`), a ação `23` zera as velocidades e **para de somar o deslocamento da animação (`+0x140..+0x150`) na posição `(X, Y, Z)`**, aguardando que o script da escada chame `func_8009E1E0(3)` para assumir o movimento.
   3. Quando `func_800944E0` lia `U16(0x8010E0F8) == 1` (`0x800945FC`), ela limpava o flag e chamava `func_8009C2E4(15, 0)`. Porém, em `coop_event_dispatch_begin` (`func_8009C2E4`), o mod só olhava `trigger_player` (que era `0`, pois a checagem de `act1 == 23` ficava dentro de `func_8009E1E0`, que só roda *depois* que o script passa pelas condições de `func_8009C2E4`!). Assim, `func_8009C2E4(15, 0)` avaliava a condição da escada (`func_8009BBB8`) olhando para o Jean-Luc (`PLAYER_PTRS[0]`), via que ele não estava na escada e abortava o script sem chamar `func_8009E1E0(3)` nem `func_80098F20`.
 - **Correção (`coop_event_mgr_begin` e `coop_event_dispatch_begin`):** Antes de `func_800944E0` consumir `0x8010E0F8 == 1` e logo na entrada de `func_8009C2E4`, o mod inspeciona `U16(SLOT0_DATA/SLOT1_DATA + 0x16EC)` para as ações diretas (`23` = escada, `9` = mureta, `25` = switch, `12`/`13` = porta), define `trigger_player = 1` e troca os ponteiros antes da avaliação do script.
-
----
-
-## 6. Pesquisa Técnica: Modo Primeira Pessoa (First-Person / FPS Mode)
-
-Esta seção documenta a engenharia reversa do pipeline de câmera, esqueleto/ossos, mira laser e renderização de personagens na ROM (`baserom.us.z64`) para implementação de um modo **Primeira Pessoa (FPS)** (tanto em 1P quanto em Split-Screen Co-op, ou híbrido: ex. 3ª pessoa andando e 1ª pessoa ao mirar/cover).
-
-### 6.1. Como o Motor Calcula e Usa a Câmera a Cada Frame
-
-1. **Objeto e Struct da Câmera (`CAM_PTRS` em `0x80179280`):**
-   - Cada jogador possui uma tarefa de câmera (`func_80034840`), cujo callback de update é **`func_80034DBC(cam_obj)`** (`0x80034DBC..0x80035174`), onde:
-     - `cam_data = U32(cam_obj + 0x2C)` (ponteiro também guardado em `CAM_PTRS[idx]` = `0x80179280 + idx * 4`);
-     - `player = U32(U32(cam_obj + 0x20) + 0x2C)` (jogador dono da câmera);
-     - `idx = S16(cam_data + 0x18)` (`0` para P1, `1` para P2).
-   - Campos principais de `cam_data`:
-     - `+0x00, +0x04, +0x08` (`float[3]`): posição `Eye (X, Y, Z)` calculada pela câmera;
-     - `+0x0C, +0x10, +0x14` (`float[3]`): ângulos `pitch` (`+0x0C`), `yaw` (`+0x10`) e `roll` (`+0x14`) da câmera;
-     - `+0x28, +0x2C, +0x30` (`float[3]`): posição `LookAt (X, Y, Z)` (alvo para onde a câmera olha);
-     - `+0x44` (`float[3][3]`): matriz de rotação 3x3 da câmera, recalculada no fim de `func_80034DBC` (`0x80035144`);
-     - `+0xEC` (`s16`): modo atual da câmera (despachado pela tabela `0x80103D80[mode]`, modos `0..9`);
-     - `+0x10C` (`float`) e `+0x148` (`float`): offsets verticais (`Y`) de elevação/inclinação da visão.
-
-2. **Publicação do `Eye` e `LookAt` para o Renderizador (`func_80026760` e `func_800266D0`):**
-   - No final de `func_80034DBC` (`0x80035004` e `0x80035044`), a câmera copia suas coordenadas finais para os 6 arrays globais indexados por `idx` (`0` = P1, `1` = P2, stride de 4 bytes):
-     - **`func_80026760(eye_x, eye_y, eye_z, idx)`** (`0x80026760`): grava o **Eye** global:
-       - `Eye X`: `F32(0x8015D6D8 + idx * 4)` *(nota: `lui 0x8016` + signed `0xD6D8` = `0x8015D6D8`)*
-       - `Eye Y`: `F32(0x801B0CE8 + idx * 4)`
-       - `Eye Z`: `F32(0x80178FB0 + idx * 4)` *(nota: `lui 0x8018` + signed `0x8FB0` = `0x80178FB0`)*
-     - **`func_800266D0(look_x, look_y, look_z, idx)`** (`0x800266D0`): grava o **LookAt** global:
-       - `LookAt X`: `F32(0x80158748 + idx * 4)`
-       - `LookAt Y`: `F32(0x8015D268 + idx * 4)`
-       - `LookAt Z`: `F32(0x801C3808 + idx * 4)`
-   - Na hora de desenhar cada viewport (`func_80025F10` $\rightarrow$ `0x800263C0..0x80026450`), o motor monta a matriz `guLookAt` do N64 lendo diretamente esses 6 floats globais para o viewport `s0` (`0` ou `1`).
-
----
-
-### 6.2. Posição Exata dos Olhos, Cabeça e Arma na Struct do Jogador
-
-O motor já calcula e mantém em tempo real, a cada frame, a posição 3D mundial da cabeça/olhos e a matriz 3D da mão direita (arma) de cada jogador:
-
-1. **Coordenada Mundial dos Olhos/Cabeça (`player + 0x0CD4`):**
-   - Durante o cálculo das matrizes dos 15 ossos do esqueleto (`func_80069D44`, em `0x8006A454..0x8006A4B8`), o motor extrai a translação mundial do **osso 8 (cabeça)** da matriz `player + 0x1578` e grava em:
-     - `F32(player + 0x0CD4)`: **Head/Eye X** no mundo;
-     - `F32(player + 0x0CD8)`: **Head/Eye Y** no mundo (acompanha automaticamente se o jogador está em pé, agachado, em cover, rolando ou subindo escada!);
-     - `F32(player + 0x0CDC)`: **Head/Eye Z** no mundo.
-   - É exatamente esse ponto `player + 0x0CD4` que a IA dos inimigos usa para testar linha de visão (`func_80044D98` em `func_800CE718`) e para mirar na cabeça do jogador (`0x8005A43C`).
-
-2. **Direção do Olhar / Mira do Jogador:**
-   - **Andando / Livre (`+0x16EC == 0, 1, 2`):**
-     - `F32(player + 0x0064)`: ângulo horizontal (`yaw`) para onde o corpo está virado;
-     - `F32(cam_data + 0x0010)`: `yaw` da câmera (controlado por C-Left/C-Right ou analógico direito via `winback_camera_analog`).
-   - **Mirando (`+0x16EC == 3` ou atirando `+0x16EC == 4`):**
-     - `F32(player + 0x0064) + F32(player + 0x0158)`: `yaw` exato da mira (corpo + offset horizontal da mira livre);
-     - `F32(player + 0x0154)`: `pitch` vertical da mira livre (inclinação para cima/baixo).
-   - **Matriz da Mão Direita / Arma (`player + 0x1698`):**
-     - O osso 13 (mão direita que segura a arma) tem sua matriz 4x4 mundial em `player + 0x1698` (e o osso da cabeça em `player + 0x1578`). É de `player + 0x1698` que saem a linha do laser (`0x80029720`) e a origem do tiro (`func_800B8FB0` em `0x800B9010`).
-
----
-
-### 6.3. Ocultação Seletiva da Cabeça/Corpo (Evitar Clipping na Câmera)
-
-Se colocarmos o `Eye` da câmera exatamente em `player + 0x0CD4` (dentro da cabeça do personagem), a malha 3D da cabeça bloquearia a visão. A engenharia reversa de **`func_80057100`** (`0x80057100..0x800577FC`, função que desenha os personagens humanos) revela duas formas muito limpas de lidar com isso:
-
-1. **Abordagem A — Ocultar apenas a Cabeça (mantendo braços, arma e pernas visíveis em 1ª pessoa / "True FPS Viewmodel"):**
-   - Em `func_80057100` (`0x80057608..0x80057788`), o jogo faz um loop `bone_idx = 1..15` (`$s3`) lendo a tabela de ponteiros de Display List dos 15 ossos apontada por **`U32(player + 0x1744)`**:
-     - Se `dl_offset == -1` (`0xFFFFFFFF`, testado em `0x80057638`), o jogo pula o desenho daquele osso!
-     - O **osso 8** (cabeça) é a entrada `bone_idx = 8` dessa tabela (e as juntas dinâmicas do pescoço são montadas em `func_8006C68C`).
-   - Melhor ainda: como em `func_80025F10` o jogo desenha um viewport por vez (`vp = U8(0x8016A40F)` = `0` para a tela de cima/P1, `1` para a tela de baixo/P2):
-     - No Co-op Split-Screen, quando `vp == 0` (desenhando a tela do P1), o P1 está em 1ª pessoa para si mesmo, mas **o P2 olhando para o P1 deve ver o corpo inteiro do P1 normalmente**!
-     - E quando `vp == 1` (desenhando a tela do P2), o P2 está em 1ª pessoa para si mesmo, mas vê o P1 inteiro!
-
-2. **Abordagem B — Ocultar o Corpo do Próprio Jogador Apenas no Seu Próprio Viewport (mantendo a Mira Laser e Sombras):**
-   - Em `func_80057100` (`0x80057520..0x80057530`):
-     ```mips
-     0x80057520: lw  $v0, 0x00F4($s2)
-     0x80057524: lui $v1, 0x2000
-     0x80057528: ori $v1, $v1, 0x0100
-     0x8005752C: and $v0, $v0, $v1
-     0x80057530: bne $v0, $zero, 0x800577D4  # Pula o desenho dos 15 ossos e juntas!
-     ```
-   - Antes desse `bne` (`0x800571F0..0x800573FC`), `func_80057100` **já desenhou a sombra no chão e o modelo da arma na mão + mira laser** (`func_8006ADC4` / `0x80057250`)!
-   - Ou seja: se colocarmos um `RECOMP_HOOK("func_80057100")` que, quando `player == PLAYER_PTRS[U8(0x8016A40F)]` (o jogador dono do viewport que está sendo renderizado naquele instante), liga temporariamente o bit `0x100` em `U32(player + 0xF4)` (e restaura no `RECOMP_HOOK_RETURN("func_80057100")`):
-     - O jogador **não desenha o próprio corpo na sua câmera** (zero clipping de cabeça/tronco), mas **continua desenhando sua arma e seu laser**, e **continua 100% visível na tela do parceiro**!
-
----
-
-### 6.4. Como Funciona a Movimentação e a Mira em 1ª Pessoa
-
-Existem dois modos possíveis de implementar a câmera de 1ª pessoa num hook no final de `func_80034DBC` (ou em `func_80026760` / `func_800266D0`):
-
-1. **Modo 1 — Primeira Pessoa Completa (Full FPS):**
-   - **Posição da câmera (`Eye`):**
-     - `Eye = (player->0x0CD4, player->0x0CD8 + 6.0f, player->0x0CDC)` (posição real da cabeça calculada pelo esqueleto, mais um pequeno avanço frontal `forward * 12.0f` ou ocultação do próprio corpo no viewport ativo via `func_80057100`).
-   - **Direção da câmera (`LookAt`):**
-     - Quando **mirando/atirando** (`act == 3 || act == 4`):
-       - `yaw = F32(player + 0x64) + F32(player + 0x158)`
-       - `pitch = F32(player + 0x154)`
-       - O `Eye` pode ser deslocado levemente para o lado da arma (`right * 8.0f`, `up * 4.0f` em relação à mão `player + 0x1698`), dando visão "iron sights / over-the-gun" alinhada com o laser real da arma!
-     - Quando **andando / correndo / em cover**:
-       - `yaw = F32(player + 0x64)` (ou `cam_data + 0x10` sincronizado com `player + 0x64` para estilo FPS moderno onde girar a câmera gira o personagem);
-       - `LookAt = Eye + (sin(yaw)*cos(pitch), sin(pitch), cos(yaw)*cos(pitch)) * 400.0f`.
-   - **Controle estilo FPS (Strafe + Giro):**
-     - No WinBack original (3ª pessoa / tanque), o analógico esquerdo gira o personagem (`+0x64`) quando empurrado para os lados. Para um FPS puro, pode-se copiar o `yaw` da câmera (`cam_data + 0x10`, girado pelo analógico direito / C-Left / C-Right) diretamente para `F32(player + 0x64)`, ou manter a direção da câmera alinhada com `player + 0x64`.
-
-2. **Modo 2 — Híbrido (3ª Pessoa Andando/Cover + 1ª Pessoa ao Mirar com `R`):**
-   - Como *WinBack* é fortemente baseado em **cover nas paredes e cantos** (espiar pela esquina), um modo muito interessante (estilo *Metal Gear Solid 2* / *Resident Evil: Dead Aim*) é:
-     - Manter 3ª pessoa normal ao correr e se esconder na parede (ou permitir alternar 1ª/3ª pessoa com um botão/opção no menu do mod: `Camera: Third-person / First-person / First-person on aim`);
-     - Ao segurar **R** (entrar em estado de mira `act == 3` ou `4`), a câmera faz transição imediata para a visão em 1ª pessoa na altura dos olhos/arma (`player + 0x0CD4` / `player + 0x1698`), olhando exatamente na direção do laser (`yaw = +0x64 + +0x158`, `pitch = +0x154`).
-
----
-
-### 6.5. Resumo dos Hooks Necessários caso queiramos implementar
-
-| Função na ROM | VRAM (`size`) | Hook proposto | O que fará |
-| :--- | :--- | :--- | :--- |
-| `func_80034DBC` | `0x80034DBC` (`0x3B8`) | `RECOMP_HOOK_RETURN` | No fim do update da câmera de cada jogador (`idx = 0` ou `1`), sobrescreve `Eye` (`0x8015D6D8`, `0x801B0CE8`, `0x80178FB0`) e `LookAt` (`0x80158748`, `0x8015D268`, `0x801C3808`) usando a cabeça `player + 0x0CD4..0x0CDC` e os ângulos `+0x64`, `+0x158` (yaw) e `+0x154` (pitch), além de atualizar `cam_data + 0x00..0x30` e a matriz `cam_data + 0x44`. |
-| `func_80057100` | `0x80057100` (`0xAB4`) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` | Quando o personagem sendo desenhado (`U32(obj + 0x2C)`) for o dono do viewport atual (`PLAYER_PTRS[U8(0x8016A40F)]`) e estiver em 1ª pessoa, liga temporariamente `player + 0xF4 |= 0x100` (oculta os 15 ossos do corpo para não tampar a câmera, mantendo a arma/mira laser na mão e mantendo o personagem visível na tela do outro jogador). |
-
-
----
 
 ### Passo 44: Diagnóstico da escada do checkpoint do stage 1 (v0.3.14)
 - Sintoma (depois do Passo 43): no stage 1, na escada do checkpoint, o P2 desce e fica "voando"; com o P1 funciona.
@@ -905,3 +785,249 @@ Existem dois modos possíveis de implementar a câmera de 1ª pessoa num hook no
 - **Causa provável:** o jogo leva o HP de um mapa para o outro num valor único (feito para um jogador) e aplica o mesmo valor aos dois personagens na carga.
 - **Correção:** em `coop_stage_load` (`func_8004C438`) o mod guarda o HP dos dois (`+0x176B`). No primeiro quadro de jogo depois da carga, se o jogo deixou os dois com o mesmo valor e esse valor é um dos dois guardados, cada um volta ao seu HP. Se o valor novo não for nenhum dos guardados (continue, fase nova, recarga), nada é mexido. Só age quando os dois estavam vivos e com HP diferentes.
 - Log: `coop: lad hp_keep <valor que o jogo pôs> <HP P1> <HP P2>`.
+
+---
+
+## 6. Pesquisa Técnica Detalhada: Modo Primeira Pessoa (First-Person / FPS Mode)
+
+Esta seção documenta a engenharia reversa completa do pipeline de câmera, projeção de perspectiva (`near`/`far`/`FOV`), esqueleto de 15 ossos, juntas dinâmicas (`LOD`), mira livre, auto-aim, origem real dos projéteis e estados de ação na ROM (`baserom.us.z64`) para viabilizar um modo **Primeira Pessoa (FPS)** (tanto em 1P quanto em Split-Screen Co-op, com opção de modo puro ou híbrido).
+
+---
+
+### 6.1. Pipeline de Projeção (`func_800262FC`), Near Clipping Plane (`10.0f`), FOV e Matrizes
+
+A cada frame, durante a renderização de cada viewport (`vp = U8(0x8016A40F)` = `0` para P1, `1` para P2) dentro de `func_80025F10`, o motor chama **`func_800262FC`** (`0x800262FC..0x800266CC`) para construir as matrizes de projeção (`guPerspectiveF` / `func_800F5090`) e visualização (`guLookAtF` / `func_800F4968`):
+
+1. **Ramo de Gameplay Normal (`0x80026330..0x80026450`, quando `STATE & 0x100 != 0` e `CUTSCENE_FLAG == 0`):**
+   - **FOV Vertical (`fovy`):** Lido de **`F32(0x80103758)`** (`0x80026374`), que é copiado a cada frame por `func_80026760` (`0x80026798`) a partir de **`F32(0x80103754)`** (resetado para `50.0f` graus / `0x42480000` em `0x80034E48`).
+     - *Aplicação prática em 1ª pessoa:* Alterar `F32(0x80103754)` (ou `0x80103758` por viewport em `func_800262FC`) permite implementar **FOV configurável** (ex.: `60.0f` ou `65.0f` andando para maior visão periférica em FPS, e zoom suave para `38.0f..42.0f` ao segurar `R` para mirar / *Iron Sights*).
+   - **Near Clipping Plane (`near`):** Hardcoded em **`10.0f`** (`0x41200000`, carregado em `0x80026378` no argumento `$a2` / `$f14` de `func_800F5090`).
+   - **Far Clipping Plane (`far`):** `5500.0f` (`0x157C`) em salas internas ou `10000.0f` (`0x2710`) em áreas abertas (`func_8003F53C` testado em `0x8002634C`).
+   - **Implicação Crítica do `near = 10.0f` para o Viewmodel em 1ª Pessoa:**
+     - Qualquer geometria a menos de `10.0` unidades do `Eye` é descartada pelo plano de corte próximo (near plane) do N64/RT64.
+     - O raio da cabeça do personagem ao redor do osso 8 (`player + 0x0CD4`) é de `~8..12` unidades, enquanto a mão direita e a arma (`player + 0x1698`) durante a postura de mira ficam a **`18..32` unidades** à frente da cabeça/peito.
+     - Isso significa que, posicionando o `Eye` na cabeça (`player + 0x0CD4`), **a arma 3D e os antebraços esticados ficam além do plano `near = 10.0f` e são renderizados inteiros sem precisar alterar o near plane**, enquanto a cabeça/pescoço (entre `0` e `12` unidades) sofreria corte parcial e por isso deve ser ocultada (ver Seção 6.3).
+
+2. **Ramo de Cutscene (`0x80026454..0x80026564`, quando `CUTSCENE_FLAG != 0` ou `STATE & 0x800 == 0`):**
+   - Usa `FOV` de `F32(0x8010375C)`, `near = 12.0f` (`0x41400000`), `far = 5500.0f`, e lê o `Eye`/`LookAt` próprios da cutscene em `0x8013A730`, `0x801CF9C0`, `0x80134E08`, `0x80188C48`, `0x8015D278` e `0x801CC620`.
+   - Portanto, se o override de 1ª pessoa atuar apenas na câmera de gameplay (`func_80034DBC`) e respeitar `CUTSCENE_FLAG == 0` (`U16(0x8010AC4A) == 0`), todas as cutscenes da campanha continuam funcionando em 3ª pessoa sem interferência.
+
+---
+
+### 6.2. Ciclo Completo de `func_80034DBC` e Por Que Atualizar `cam_data` Além dos 6 Floats Globais
+
+A função **`func_80034DBC(cam_obj)`** (`0x80034DBC..0x80035174`) é o callback da tarefa de câmera de cada jogador (`cam_data = U32(cam_obj + 0x2C)`, `player = U32(U32(cam_obj + 0x20) + 0x2C)`, `idx = S16(cam_data + 0x18)`):
+
+1. **Fluxo interno de `func_80034DBC`:**
+   - `0x80034ED8..0x80034EF0`: Chama o handler do modo de câmera atual via `0x80103D80[S16(cam_data + 0xEC)]`:
+     - Modo `0` (`0x80037BA8`): câmera livre de perseguição atrás do jogador;
+     - Modo `1` (`0x80037C30`): câmera de mira sobre o ombro (*over-the-shoulder*);
+     - Modo `2` (`0x80037DDC`): câmera de cover colado na parede;
+     - Modo `3` (`0x80037F78`): câmera de canto (*corner peek*) espiando a esquina;
+     - Modos `4..8`: cover baixo, cambalhota, lock-on e câmeras fixas de chefe;
+     - Modo `9` (`0x80036830`): câmera fixa de interação com switch/terminal (ativada por `func_80036730` na ação `25`).
+   - `0x80034F78..0x80034FC8`: Executa colisão de câmera contra paredes e teto da sala (`func_80038BC0`, `func_800358F4`, `func_800379E4`, `func_800374FC`, `func_800352E4`, `func_80038CB8`), gravando a posição resultante em `cam_data + 0x00, +0x04, +0x08` e o alvo em `cam_data + 0x28, +0x2C, +0x30`.
+   - `0x80034FD0..0x80035048`: Soma os offsets verticais (`+0x10C`, `+0x148`, `0x801891E0`, `0x801B04C8`) e publica nos 6 arrays globais do renderizador (`idx = 0` ou `1`):
+     - **`func_80026760(eye_x, eye_y, eye_z, idx)`**: grava `Eye X` em `0x8015D6D8[idx]`, `Eye Y` em `0x801B0CE8[idx]`, `Eye Z` em `0x80178FB0[idx]`.
+     - **`func_800266D0(look_x, look_y, look_z, idx)`**: grava `LookAt X` em `0x80158748[idx]`, `LookAt Y` em `0x8015D268[idx]`, `LookAt Z` em `0x801C3808[idx]`.
+   - `0x8003504C..0x80035164`:
+     - Constrói a matriz de rotação 3x3 da câmera em `cam_data + 0x44` a partir do yaw `F32(cam_data + 0x10)`;
+     - Chama **`func_800267CC(cam_yaw, player->0x90, player->0x8E)`** (`0x800267CC..0x80026880`), que atualiza o **vetor de iluminação direcional** do jogador (`0x80103770/72` para P1 e `0x80103788/8A` para P2) em função do ângulo da câmera.
+
+2. **Por que sobrescrever APENAS os 6 floats globais (`0x8015D6D8`, etc.) NÃO basta:**
+   A engenharia reversa de `func_80059E5C` (update principal do jogador) mostrou que vários subsistemas leem a struct **`cam_data`** (`CAM_PTRS[player->0x90]` em `0x80179280`):
+   - **Direção de movimento do analógico relativo à câmera (`0x80059EFC..0x8005A050`):** Logo no início de `func_80059E5C`, o jogo lê `cam_data + 0x00..0x08` (`Eye`) e `cam_data + 0x0C..0x10` (`pitch`/`yaw`) para converter a inclinação do analógico esquerdo em direção de caminhada no mundo. Se `cam_data` continuasse com a posição de 3ª pessoa enquanto a tela mostrasse 1ª pessoa, o vetor "para frente" do controle ficaria desalinhado quando a câmera de 3ª pessoa batesse numa parede lateral!
+   - **Cálculo de Distância e Seleção de LOD (`0x8005A1C4..0x8005A2E4`):** `func_80059E5C` calcula a distância 3D entre `player` e `cam_data + 0x00..0x08`, grava em `F32(player + 0x1720)` e escolhe o nível de detalhe (`U8(player + 0x1768)` = LOD `1`, `2` ou `3`) e a tabela de Display Lists (`U32(player + 0x1744)`). Ao colocar `cam_data + 0x00..0x08` na cabeça do jogador, a distância é `~0`, garantindo `LOD = 1` (malha de máxima qualidade).
+   - **Orientação do Feixe Laser (`func_80066630`):** O cilindro/fita 3D da mira laser usa a posição da câmera para calcular o *billboarding* do feixe.
+   - **Conclusão arquitetural:** No `RECOMP_HOOK_RETURN("func_80034DBC")`, devemos atualizar **tanto** os campos de `cam_data` (`+0x00..+0x08`, `+0x0C`, `+0x10`, `+0x28..+0x30`) **quanto** chamar `func_80026760` e `func_800266D0` (ou gravar nos 6 arrays globais).
+
+---
+
+### 6.3. Anatomia do Esqueleto de 15 Ossos, Juntas Dinâmicas (`func_8006C68C`) e Ocultação por Viewport
+
+Em **`func_80069D44`** (cálculo de animação e cinemática direta) e **`func_80057100`** (`0x80057100..0x800577FC`, renderização de personagens humanos), cada personagem possui **15 ossos rígidos** (`bone_idx = 1..15`, iterados em `0x80057608..0x80057788`):
+
+1. **Mapa de Memória das Matrizes e Display Lists na Struct do Jogador:**
+   - **Matrizes Float 3x4 por Osso (`player + 0x13F8`, stride `0x30` = 48 bytes):**
+     - `bone_float_mtx(b) = player + 0x13F8 + (b - 1) * 0x30` (para `b = 1..15`).
+     - **Osso 8 (`player + 0x1548`) e Osso 9 (`player + 0x1578`) — Cabeça / Pescoço:** Em `0x8006A454..0x8006A4B8`, `func_80069D44` extrai a posição mundial de `player + 0x1578` e salva em **`F32(player + 0x0CD4, +0x0CD8, +0x0CDC)`**. Em `0x80057660`, o osso 9 também anexa acessórios de cabeça (`D_8011DCCC`).
+     - **Osso 12 (`player + 0x1608`) — Mão Esquerda:** Usado em cover (`action == 10`, `0x80029724`).
+     - **Osso 13 (`player + 0x1638`) e Osso 15 (`player + 0x1698`) — Braço Direito / Mão Direita (Arma):** A matriz `player + 0x1698` contém a posição e orientação mundial exata da empunhadura da arma!
+     - **Rotação Procedural de Mira no Tronco/Cabeça/Braço (`0x800576A4..0x8005774C`):** Quando `U32(player + 0xF4) & 0x40000000` está ativo, `func_80057100` aplica rotação adicional (`func_8004B2DC` com `F32(player + 0x1968)` e `F32(player + 0x196C)`) especificamente nos **ossos 8, 10 e 13**.
+   - **Matrizes RSP Fixed-Point `Mtx` (`player + 0x1008`, stride `0x40` = 64 bytes):**
+     - `bone_rsp_mtx(b) = player + 0x1008 + (b - 1) * 0x40`, convertidas via `func_8004B6B8` e enviadas ao RSP com `gSPMatrix` (`0xDA380001`).
+   - **Tabela de Display Lists dos 15 Ossos (`U32(player + 0x1744)`):**
+     - Aponta para um array de 15 `u32` (offsets de Display List no segmento `0x04`). Se a entrada `b - 1` for `0xFFFFFFFF` (`-1`, checado em `0x80057638`), o osso não é desenhado.
+
+2. **Duas Estratégias de Ocultação Seletiva por Viewport (`vp = U8(0x8016A40F)`):**
+   Como `func_80025F10` desenha um viewport por vez (`vp = 0` para P1 no topo, `vp = 1` para P2 embaixo), qualquer ocultação feita em `func_80057100` quando `player == PLAYER_PTRS[vp]` afeta **exclusivamente a câmera de 1ª pessoa do próprio jogador**, mantendo o corpo inteiro visível na tela do parceiro no Co-op!
+
+   - **Estratégia 1 — Ocultar Corpo + Juntas (`+0xF4 |= 0x100`), Mantendo Arma 3D, Mira Laser e Sombra (Mais Limpa e Zero Artefatos):**
+     - A ordem de execução dentro de `func_80057100` é:
+       1. `0x800571F0..0x80057210`: Desenha a sombra no chão (`func_80056C58`, `func_800AA760`).
+       2. `0x80057214..0x800573FC`: Se `player->0xF4 & 0x4000` (arma sacada / mirando) e `!(player->0xF8 & 0x400)` (não é C4), chama `func_8006ADC4` e **desenha o modelo 3D da arma na mão e o feixe da mira laser**!
+       3. `0x80057520..0x80057530`: Testa `if (U32(player + 0xF4) & 0x20000100) goto 0x800577D4`, pulando o loop dos 15 ossos do corpo (`0x80057608..0x80057788`) e o desenho das juntas dinâmicas (`func_8006C68C` / `func_8006EF90` em `0x800577C4`).
+     - Portanto, basta um `RECOMP_HOOK("func_80057100")` que ligue temporariamente `U32(player + 0xF4) |= 0x100` apenas quando `player == PLAYER_PTRS[U8(0x8016A40F)]` (e limpe o bit no `RECOMP_HOOK_RETURN`): o jogador vê sua arma 3D e o laser em 1ª pessoa ao mirar, sem nenhum polígono da cabeça ou ombro entrando na frente da lente!
+
+   - **Estratégia 2 — Viewmodel Completo com Braços e Pernas Visíveis (Ocultando Apenas Cabeça/Tronco e Juntas Superiores):**
+     - Se quisermos ver também os braços segurando a arma e as pernas ao olhar para baixo:
+       - Se colocarmos `-1` (`0xFFFFFFFF`) apenas nos ossos da cabeça/peito (`ossos 7, 8, 9`) na tabela `U32(player + 0x1744)`, a função de *skinning* de juntas dinâmicas do LOD 1 (`func_8006C68C`, chamada em `0x800577C4` quando `U8(player + 0x1768) == 1`) ainda desenharia os triângulos do pescoço e ombros.
+       - Porém, em `0x800577A0..0x800577D0`, se `U8(player + 0x1768)` (LOD) for temporariamente alterado para `3` durante o desenho do dono do viewport, `func_80057100` **pula `func_8006C68C` e `func_8006EF90`** (as malhas de junção do pescoço/tronco), desenhando unicamente os ossos permitidos na tabela `+0x1744` (braços, mãos, arma e pernas)!
+
+---
+
+### 6.4. Origem Real do Tiro do Jogador (`func_800295B4` / `func_80094B40`), Mira Livre (`func_800D4414`) e Auto-Aim (`func_800D3C2C`)
+
+A pesquisa detalhada na ROM também revelou **onde os tiros do jogador realmente nascem** (o que antes era uma questão em aberto no Passo 42d, já que `func_800B876C` era apenas para NPCs tipos `0x33/0x34`):
+
+1. **Spawn Real do Tiro e Raycast do Jogador (`0x8005E540..0x8005E78C` dentro de `func_8005DC88` — Ação 3):**
+   - Quando o jogador aperta `A` ou `Z` enquanto mira (`action == 3`, tratada por `func_8005DC88`):
+     - Em `0x8005E544`: o motor chama `func_8004A440` sobre a matriz da mão direita **`player + 0x1698`** (osso 15) e grava a posição/eixos em `0x80187FE8`.
+     - Lê os offsets da ponta do cano (*muzzle*) nas tabelas **`0x8011D470`** (deslocamento lateral `s16`) e **`0x8011D472`** (comprimento do cano `s16`, indexados por `weapon_id * 4`).
+     - Se a arma for o Rocket Launcher (`weapon_class == 3` em `0x8005E678`), chama **`func_80094B40`** (`0x8005E6A0`).
+     - Para Pistola, Submetralhadora e Escopeta (`0x8005E6D0..0x8005E788`), chama **`func_800295B4(player_obj, muzzle_x, muzzle_y, muzzle_z, ...)`** (`0x800295B4..0x8002A528`), que cria a tarefa do projétil (`func_80027470(1, 4, 0x80)`), projeta o raio a partir da matriz `player + 0x1698` (`0x80029720`) e executa a detecção de acerto!
+   - **Consequência excelente para 1ª Pessoa:** Como tanto a mira laser (`G_LINE3D`) quanto o raio do tiro (`func_800295B4`) partem da matriz física da arma (`player + 0x1698`) com os ângulos `yaw = F32(player + 0x64) + F32(player + 0x158)` e `pitch = F32(player + 0x154)`, **não é necessário criar um crosshair 2D artificial na tela**: o próprio ponto vermelho / feixe 3D do laser mostra exatamente onde a bala vai atingir em 1ª pessoa!
+
+2. **Ângulos da Mira Livre (`func_800D4414`) e Desbloqueio do Limite Vertical (`Pitch Clamp`):**
+   - Enquanto o jogador segura `R` (`action == 3`), `func_8005EC5C` chama **`func_800D4414(player)`** (`0x800D4414..0x800D4830`).
+   - Essa função lê o analógico (`F32(0x801659C0 + idx * 24)` para X e `F32(0x801659C4 + idx * 24)` para Y) e atualiza:
+     - `F32(player + 0x0158)`: offset horizontal de mira (`yaw` relativo ao corpo `player + 0x0064`);
+     - `F32(player + 0x0154)`: inclinação vertical de mira (`pitch` em radianos).
+   - **Limites originais de `pitch` encontrados na ROM:**
+     - Limite inferior (olhar para baixo, `0x800D47A4`): **`-0.22f` radianos** (`0xBE6147AE`, apenas **`-12.6°`**).
+     - Limite superior (olhar para cima, `0x800D47D0`): **`+0.46f` radianos** (`0x3EEB851F`, **`+26.4°`**).
+   - Em 3ª pessoa, `-12.6°` para baixo evita que a câmera atravesse o chão atrás do personagem, mas em 1ª pessoa impede mirar em inimigos baixos, minas terrestres ou lasers perto dos pés. Num hook pós-`func_800D4414`, podemos expandir o clamp inferior de `+0x0154` para **`-0.65f` rad (`-37°`)** quando o modo 1ª pessoa estiver ativo!
+
+3. **Interação com o Auto-Aim (`func_800D3C2C`):**
+   - Quando há um alvo travado em `0x80138EF8[idx]`, a função **`func_800D3C2C(player, target)`** (`0x800D3C2C..0x800D43DC`) calcula automaticamente `+0x0158` (`yaw`) e `+0x0154` (`pitch`) apontando para o inimigo.
+   - Como a câmera de 1ª pessoa no estado de mira lê `yaw = +0x64 + +0x158` e `pitch = +0x154`, o auto-aim do jogo vira automaticamente um *snap-to-target* suave da câmera de 1ª pessoa para o inimigo (ou o jogador pode usar a opção `no_auto_aim` já existente no mod para mira manual pura de FPS).
+
+---
+
+### 6.5. Comportamento Detalhado por Estado de Ação (`player + 0x16EC`) e Controles Dual-Stick
+
+Para que o modo 1ª pessoa seja confortável do início ao fim da campanha, cada grupo de estados `U16(player + 0x16EC)` deve ser tratado especificamente:
+
+| Estado (`+0x16EC`) | Descrição da Ação | Posicionamento Ideal do `Eye` e `LookAt` em 1ª Pessoa |
+| :--- | :--- | :--- |
+| **`0, 1, 2`** | Parado, andando, correndo (em pé ou agachado `+0xF4 & 0x20`) | **`Eye`:** `(player->0x0CD4, player->0x0CD8 + 4.0f, player->0x0CDC)`. Usar `player->0x0CD8` dá um *head-bob* natural da animação de corrida e acompanha o agachamento automaticamente (ou pode-se interpolar `Y` com `player->0x3C + (crouching ? 100.0f : 152.0f)` para quem preferir câmera 100% estável sem balanço).<br>**`LookAt`:** `yaw = F32(player + 0x64)` (sincronizado com `cam_data + 0x10`), `pitch = F32(cam_data + 0x0C)`. |
+| **`3, 4, 5`** | Mirando (`3`), atirando (`4`), recarregando (`5`) | **`Eye` (Visão *Over-the-Gun* / *Iron Sights*):** Posicionado logo atrás e ligeiramente acima da mão da arma (`player + 0x1698` recuado `14.0f` unidades ao longo do vetor `forward` e subido `+6.0f` em `Y`, ou na cabeça `+0x0CD4` deslocada `6.0f` para a direita em direção ao ombro da arma).<br>**`LookAt`:** Paralelo ao cano da arma (`yaw = F32(player + 0x64) + F32(player + 0x158)`, `pitch = F32(player + 0x154)`). Assim a arma 3D fica visível no canto inferior direito/centro da tela e o laser aponta exatamente para o centro da visão! |
+| **`10`** | Encostado na parede em Cover (*Wall Cover*) | Em `action == 10`, as costas do jogador estão coladas na parede e `player + 0x64` aponta para fora da parede. Há duas opções:<br>1. **Tático Híbrido (Recomendado, estilo *Rainbow Six Vegas* / *Deus Ex*):** Enquanto colado na parede (`action == 10`), mantém a câmera original de cover em 3ª pessoa (`cam_data + 0xEC == 2` ou `3`) para enxergar o corredor além da quina; assim que o jogador aperta `R` e sai do cover para mirar (`action == 3` ou `11`), entra instantaneamente em 1ª pessoa!<br>2. **1ª Pessoa Estrita:** Mantém `Eye` em `player + 0x0CD4` avançado `+8.0f` para fora da parede e permite girar a cabeça (`cam_data + 0x10`) até `±85°` para olhar para os lados e para a quina. |
+| **`11`** | Espiando / saindo do canto (*Corner Peek*) | Transição direta para 1ª pessoa acompanhando a cabeça `player + 0x0CD4..0x0CDC` enquanto o personagem inclina o corpo para fora da esquina. |
+| **`7, 8`** | Cambalhota / esquiva lateral (*Roll / Dodge*) | Durante a cambalhota (`action == 7`), o osso da cabeça (`+0x0CD4`) gira `360°` perto do chão, o que causaria tontura se a câmera girasse junto. **Solução:** Durante `action == 7` ou `8`, manter o `Eye` estabilizado na horizontal em `(player->0x38, player->0x3C + 85.0f, player->0x40)` olhando na direção do rolamento (`player + 0x64`) sem aplicar o *roll* da cabeça. |
+| **`9, 23`** | Pulando mureta (`9`) e subindo/descendo escada (`23`) | Em `action == 9` e `23` (ou enquanto `in_cutscene != 0`), deixar a câmera cinematográfica da escada/mureta agir ou manter `Eye` em `player + 0x0CD4` olhando para `player + 0x64` sem rotação brusca. |
+| **`18..22`** | Levando dano (*stagger*) ou queda/morte | Em dano leve (`18, 19`), manter `Eye` em `player + 0x0CD4` (dá um feedback imersivo de impacto); ao morrer (`22` / HP `<= 0`), liberar para a câmera de morte original em 3ª pessoa. |
+| **`25`** | Acionando switch / painel (`cam_data + 0xEC == 9`) | Quando `S16(cam_data + 0xEC) == 9` (câmera fixa mostrando a porta ou laser que o switch abriu), desativar temporariamente o override de 1ª pessoa para o jogador ver o que o switch acionou. |
+
+#### Sincronização de Giro Dual-Stick em 1ª Pessoa (`cam_data + 0x10` $\leftrightarrow$ `player + 0x64`)
+- No jogo original em 3ª pessoa, os botões `C-Left` / `C-Right` (ou o Analógico Direito com o mod `winback_camera_analog`) giram `F32(cam_data + 0x10)` ao redor do personagem sem girar o corpo (`F32(player + 0x64)`).
+- Em 1ª pessoa (estados `0, 1, 2`), se copiarmos o delta de rotação de `F32(cam_data + 0x10)` para `F32(player + 0x64)` (ou mantivermos `player + 0x64 = cam_data + 0x10` enquanto o jogador está andando/correndo), o **Analógico Direito passa a girar a visão e o corpo em 1ª pessoa**, enquanto o Analógico Esquerdo move para frente/trás/lados relativo à direção do olhar — proporcionando controles modernos de FPS!
+
+---
+
+### 6.6. Esboço Técnico da Implementação em C (`coop.c`) e Opções no `mod.toml`
+
+Caso decidamos implementar, podemos adicionar uma opção de configuração no `mod.toml`:
+- `camera_mode`:
+  - `"Third-person"` (padrão original)
+  - `"First-person"` (1ª pessoa andando e mirando, com 3ª pessoa opcional em cover/cambalhota)
+  - `"First-person on aim"` (híbrido: 3ª pessoa ao andar/cover, 1ª pessoa estilo *Iron Sights* ao segurar `R` para mirar)
+
+Esboço dos dois hooks principais necessários em `src/coop.c`:
+
+```c
+/* 1. Ocultar corpo do próprio jogador apenas no seu próprio viewport em 1ª pessoa */
+static uint32_t saved_f4_fps = 0;
+static uint32_t saved_f4_player = 0;
+
+/* Dentro do hook de entrada de func_80057100(obj): */
+uint32_t player = U32(obj + 0x2C);
+uint8_t vp = U8(0x8016A40F); /* 0 = tela P1, 1 = tela P2 */
+if (fps_active_for_player(player, vp) && player == PLAYER_PTRS[vp]) {
+    saved_f4_player = player;
+    saved_f4_fps = U32(player + 0xF4);
+    /* Bit 0x100 faz 0x80057520 pular os 15 ossos do corpo e juntas,
+     * mas DEPOIS de 0x80057250 já ter desenhado a arma 3D e o laser! */
+    U32(player + 0xF4) = saved_f4_fps | 0x100u;
+}
+
+/* No RECOMP_HOOK_RETURN("func_80057100"): */
+if (saved_f4_player != 0) {
+    U32(saved_f4_player + 0xF4) = saved_f4_fps;
+    saved_f4_player = 0;
+}
+```
+
+```c
+/* 2. Posicionar Eye e LookAt em 1ª pessoa no RECOMP_HOOK_RETURN("func_80034DBC") */
+/* cam_obj foi salvo na entrada de func_80034DBC */
+uint32_t cam_data = U32(cam_obj + 0x2C);
+uint32_t player_obj = U32(cam_obj + 0x20);
+uint32_t player = player_obj ? U32(player_obj + 0x2C) : 0;
+int16_t idx = S16(cam_data + 0x18); /* 0 = P1, 1 = P2 */
+int16_t cam_mode = S16(cam_data + 0xEC);
+uint16_t act = U16(player + 0x16EC);
+
+/* Não sobrescrever durante cutscenes ou câmera fixa de switch (modo 9) */
+if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override(act)) {
+    float yaw, pitch;
+    if (act == 3 || act == 4 || act == 5) {
+        /* Mirando / Atirando: alinhado exatamente com o laser e cano da arma */
+        yaw   = F32(player + 0x0064) + F32(player + 0x0158);
+        pitch = F32(player + 0x0154);
+    } else {
+        /* Andando / Livre */
+        yaw   = F32(player + 0x0064);
+        pitch = F32(cam_data + 0x000C);
+    }
+
+    float sin_y = sinf_approx(yaw),   cos_y = cosf_approx(yaw);
+    float sin_p = sinf_approx(pitch), cos_p = cosf_approx(pitch);
+    float fwd_x = sin_y * cos_p;
+    float fwd_y = sin_p;
+    float fwd_z = cos_y * cos_p;
+
+    /* Posição base: cabeça real calculada pelo esqueleto (osso 8/9) */
+    float eye_x = F32(player + 0x0CD4) + fwd_x * 6.0f;
+    float eye_y = F32(player + 0x0CD8) + 4.0f;
+    float eye_z = F32(player + 0x0CDC) + fwd_z * 6.0f;
+
+    float look_x = eye_x + fwd_x * 400.0f;
+    float look_y = eye_y + fwd_y * 400.0f;
+    float look_z = eye_z + fwd_z * 400.0f;
+
+    /* Atualiza cam_data (usado por func_80059E5C para movimento e LOD = 1) */
+    F32(cam_data + 0x00) = eye_x;
+    F32(cam_data + 0x04) = eye_y;
+    F32(cam_data + 0x08) = eye_z;
+    F32(cam_data + 0x0C) = pitch;
+    F32(cam_data + 0x10) = yaw;
+    F32(cam_data + 0x28) = look_x;
+    F32(cam_data + 0x2C) = look_y;
+    F32(cam_data + 0x30) = look_z;
+
+    /* Atualiza os 6 arrays globais lidos por func_800262FC (guLookAtF) */
+    F32(0x8015D6D8 + idx * 4) = eye_x;
+    F32(0x801B0CE8 + idx * 4) = eye_y;
+    F32(0x80178FB0 + idx * 4) = eye_z;
+    F32(0x80158748 + idx * 4) = look_x;
+    F32(0x8015D268 + idx * 4) = look_y;
+    F32(0x801C3808 + idx * 4) = look_z;
+}
+```
+
+---
+
+### 6.7. Tabela Resumo de Funções e Endereços da ROM para o Modo 1ª Pessoa
+
+| Função / Endereço | VRAM (`size`) | Papel no Motor e Uso no Modo 1ª Pessoa |
+| :--- | :--- | :--- |
+| `func_800262FC` | `0x800262FC` (`0x3D0`) | Monta as matrizes `guPerspectiveF` (`near = 10.0f`, `far = 5500/10000`, `FOV = F32(0x80103758)`) e `guLookAtF` lendo os 6 arrays globais por viewport (`vp = U8(0x8016A40F)`). |
+| `func_80034DBC` | `0x80034DBC` (`0x3B8`) | Callback de update da câmera de cada jogador (`cam_data = +0x2C`, `idx = S16(cam_data + 0x18)`). Despacha modos `0..9` (`0x80103D80`), resolve colisão e chama `func_80026760`, `func_800266D0` e `func_800267CC`. |
+| `func_80026760` / `func_800266D0` | `0x80026760` / `0x800266D0` | Gravam `Eye` (`0x8015D6D8`, `0x801B0CE8`, `0x80178FB0`) e `LookAt` (`0x80158748`, `0x8015D268`, `0x801C3808`) para o viewport `idx`, além de copiar o FOV `0x80103754` $\rightarrow$ `0x80103758`. |
+| `func_80069D44` | `0x80069D44` (`0x8A0`) | Calcula as 15 matrizes 3x4 dos ossos (`player + 0x13F8`, stride `0x30`) e extrai a posição mundial da cabeça (osso 8/9, `+0x1578`) em `F32(player + 0x0CD4, +0x0CD8, +0x0CDC)` e da mão da arma (osso 15) em `player + 0x1698`. |
+| `func_80057100` | `0x80057100` (`0xAB4`) | Renderiza o personagem humano: desenha sombra (`0x800571F0`), arma 3D + mira laser (`0x80057214..0x800573FC`), testa `player->0xF4 & 0x20000100` (`0x80057520`), desenha os 15 ossos (`+0x1744`) e juntas dinâmicas (`func_8006C68C`). |
+| `func_800D4414` | `0x800D4414` (`0x41C`) | Atualiza os ângulos de mira livre `+0x0158` (`yaw`) e `+0x0154` (`pitch`, originalmente limitado entre `-0.22 rad` em `0x800D47A4` e `+0.46 rad` em `0x800D47D0`). |
+| `func_800D3C2C` | `0x800D3C2C` (`0x7B0`) | Calcula `+0x0158` e `+0x0154` durante o auto-aim sobre o inimigo travado em `0x80138EF8[idx]`. |
+| `func_8005DC88` / `func_800295B4` | `0x8005DC88` / `0x800295B4` | Handler da ação 3 (mira/tiro): em `0x8005E544` lê a matriz da mão `player + 0x1698`, aplica o offset do cano (`0x8011D470`/`0x8011D472`) e dispara o projétil/raycast do jogador via `func_800295B4` (ou foguete via `func_80094B40`). |
+
