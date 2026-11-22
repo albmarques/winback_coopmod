@@ -11,8 +11,8 @@ Although *WinBack*'s original N64 engine already supports split-screen viewports
 `winback_coop` solves this without rewriting the base game's campaign data. Using [`N64Recomp`](https://github.com/RetroPulse03/WinBackRecomp) runtime hooks (`RECOMP_HOOK`, `RECOMP_HOOK_RETURN`, and `RECOMP_PATCH` in [`src/coop.c`](src/coop.c)), the mod keeps stage loading and game logic running cleanly in Story mode while dynamically coordinating Player 2 (Controller 2), split-screen rendering, enemy targeting, cutscenes, and HUD state every frame.
 
 - **Target Project:** [https://github.com/RetroPulse03/WinBackRecomp](https://github.com/RetroPulse03/WinBackRecomp)
-- **Mod ID / Version:** `winback_coop` (`v0.3.26`, requires `WinBackRecomp >= 0.3.0`)
-- **Latest Release (`.nrm`):** [v0.3.26 Release](https://github.com/albmarques/winback_coopmod/releases/tag/v0.3.26) ([direct download `winback_coop.nrm`](https://github.com/albmarques/winback_coopmod/releases/download/v0.3.26/winback_coop.nrm))
+- **Mod ID / Version:** `winback_coop` (`v0.3.28`, requires `WinBackRecomp >= 0.3.0`)
+- **Latest Release (`.nrm`):** [v0.3.28 Release](https://github.com/albmarques/winback_coopmod/releases/tag/v0.3.28) ([direct download `winback_coop.nrm`](https://github.com/albmarques/winback_coopmod/releases/download/v0.3.28/winback_coop.nrm))
 
 ---
 
@@ -163,7 +163,7 @@ winback_coop/
 
 You can **either download the pre-compiled release** or **compile the mod from source** (see [Building the Mod](#building-the-mod) below):
 
-1. **Use the pre-compiled release (easiest):** Download `winback_coop.nrm` from the **[GitHub Releases page (v0.3.26)](https://github.com/albmarques/winback_coopmod/releases/tag/v0.3.26)** (or [latest release](https://github.com/albmarques/winback_coopmod/releases/latest)).
+1. **Use the pre-compiled release (easiest):** Download `winback_coop.nrm` from the **[GitHub Releases page (v0.3.28)](https://github.com/albmarques/winback_coopmod/releases/tag/v0.3.28)** (or [latest release](https://github.com/albmarques/winback_coopmod/releases/latest)).
 2. **Or compile from source:** Run [`build.bat`](build.bat) to generate `build/winback_coop.nrm`.
 3. Place `winback_coop.nrm` inside the **`mods/`** folder of your *WinBack Recompiled* installation (for example, `mods/winback_coop.nrm` in the same directory as `WinBackRecompiled.exe`).
 4. Launch the game and configure options in the in-game **Mods** menu (`Select` / `Esc`).
