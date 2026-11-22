@@ -19,7 +19,7 @@ Although *WinBack*'s original N64 engine already supports split-screen viewports
 ## Features
 
 - **Two-Player Split-Screen Story Mode:**
-  - Spawns Player 2 on Controller 2 beside Player 1 (left or right, as seen from Player 1's start camera) at a configurable distance (`spawn_distance`, `spawn_side`). A short spawn guard pushes Player 2 off Player 1 if something resets its start point.
+  - Spawns Player 2 on Controller 2 on Player 1's start point (`spawn_distance` = 0, the default), so the game gives Player 2 the right room. Above 0, Player 2 is moved sideways (`spawn_side`, as seen from Player 1's start camera) and a short spawn guard pushes Player 2 off Player 1; near a wall or doorway that move can leave Player 2 with Player 1's room (walls not blocking, parts of the map not drawn in Player 2's view).
   - Protects Player 2's character slot (`SLOT1_DATA` at `0x8017ACD0`) from being cleared by the Story enemy spawner (`func_80034364`), keeping enemies allocated to slots `2..7`.
   - Temporarily switches `MODE` to split-screen (`2`) during frame drawing (`func_80025F10`) and restores Story mode (`1`) immediately afterward.
 - **Playable Engineer Character for Player 2:**
@@ -46,6 +46,7 @@ Although *WinBack*'s original N64 engine already supports split-screen viewports
 - **Enemy AI & Multi-Room Visibility:**
   - During each enemy update (`func_800337A8`), enemies dynamically target whichever living player is closer (with squared-distance hysteresis `d1 < d0 * 0.64f` to avoid frame-by-frame target oscillation, or fall back to the surviving player).
   - Clears room-culling hide flags (`0x100`) whenever an enemy is in or visible from either player's room.
+  - Bosses (own update `func_800AD9F0`) get the same: they go after the nearer living player, keep fighting when Player 1 is down, and stay visible in either player's room.
 - **Smarter Enemies (`enemy_ai`: Original / Smart / Elite, default Smart):** ([`src/enemy_ai.h`](src/enemy_ai.h))
   - *Senses:* the game lets each enemy look for the player only one frame in 7, inside a 70° cone each side and up to 2000 units. Smart looks every 2 frames, 85°, 2600; Elite every frame, 100°, 3200. Line of sight is still required.
   - *Reactions:* the pause after spotting you is cut to 1 frame, and the aim pause before a burst from 6 frames to 3 (Smart) or 1 (Elite).
@@ -78,19 +79,21 @@ Defined in [`mod.toml`](mod.toml) and configurable from the in-game **Mods** men
 
 | Option ID | Name | Options / Range | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `spawn_distance` | Player 2 start offset | `0` – `200` (step `10`) | `100` | Distance between Player 2 and Player 1 at spawn. |
+| `spawn_distance` | Player 2 start offset | `0` – `200` (step `10`) | `0` | Distance between Player 2 and Player 1 at spawn. 0 = Player 1's start point (recommended); above 0 can give Player 2 the wrong room. |
 | `spawn_side` | Player 2 start side | `Left`, `Right` | `Left` | Side of Player 1 where Player 2 starts, seen from Player 1's camera. |
 | `p2_character` | Player 2 character | `Engineer`, `Jean-Luc` | `Engineer` | Character model for Player 2. |
 | `players` | Story players | `Menu`, `2 Players`, `1 Player` | `Menu` | Ask 1P/2P after STORY, or always use one. |
 | `hud` | Two-player HUD | `On`, `Off` | `On` | Split-screen two-player HUD. |
 | `enemies` | Enemies target nearer player | `On`, `Off` | `On` | Enemies target the nearer living player and stay visible in either room. |
 | `enemy_ai` | Enemy AI | `Original`, `Smart`, `Elite` | `Smart` | Co-op enemy senses, reactions, bursts, squad alert, target memory and revenge. |
+| `boss_toughness` | Boss toughness | `Original`, `Tough`, `Brutal` | `Tough` | Co-op: bosses take 55% / 40% damage and ignore new staggers for ~1.5 s / ~3 s after one (no stun-lock). |
+| `boss_bar` | Boss health bar | `On`, `Off` | `On` | Co-op: BOSS health bar centred under the split line during boss fights. |
 | `inventory` | Inventory | `Separate`, `Shared` | `Separate` | Per-player weapons and ammo, or the original shared inventory. |
 | `difficulty` | Co-op difficulty | `Normal`, `Hard`, `Brutal` | `Normal` | Enemy toughness/damage, attack split and pickup amount. |
 | `friendly_fire` | Friendly fire | `On`, `Off` | `Off` | Shots can hurt the partner (same room, in the line of fire). |
 | `ammo_hud` | Ammo display | `New`, `Original` | `New` | New ammo panel or the game's bullet column. |
 | `weapon_row` | Weapon row | `On`, `Off` | `On` | Owned-weapons row in the top right. |
-| `live_menu` | Live menu (D-pad down) | `On`, `Off` | `On` | Per-player menu (MAP, WEAPON with 3D weapons, ITEM, EXIT) in each half screen, game keeps running; P1 blue, P2 orange. Start opens the original pause menu. |
+| `live_menu` | Live menu (D-pad down) | `On`, `Off` | `On` | Per-player menu (MAP, WEAPON with 3D weapons, ITEM, EXIT) in each half screen, game keeps running; P1 blue, P2 orange. On the WEAPON page, R gives one magazine of the selected weapon's ammo to the partner (separate inventories). Start opens the original pause menu. |
 | `radar` | Partner radar | `On`, `Off` | `On` | Radar in the lower right. |
 | `radar_range` | Radar range | `Short`, `Medium`, `Long` | `Medium` | Radar scale. |
 | `radar_mode` | Radar orientation | `Heading-up`, `North-up` | `Heading-up` | Radar turns with the camera or stays fixed. |
@@ -125,6 +128,9 @@ winback_coop/
 ├── src/
 │   ├── coop.c              # Main C implementation of co-op hooks and HUD patch
 │   ├── enemy_ai.h          # Smarter enemies (senses, reactions, bursts, squad alert, revenge)
+│   ├── boss_bar.h          # Co-op boss health bar (centre of the screen)
+│   ├── boss_tex_data.h     # Boss bar frame (generated by tools/make_boss_hud.py)
+│   ├── boss_ai.h           # Tougher co-op bosses (damage scale + super armour)
 │   ├── radar.h             # Partner radar drawing (texture renderer)
 │   ├── ammo_hud.h          # Ammo panel drawing (texture renderer)
 │   ├── ammo_tex.h          # Generated ammo panel art (plate, digits, bullet)

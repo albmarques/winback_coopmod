@@ -44,6 +44,12 @@ LABELS = [
     ("LM_DOWN", "DOWN", MONT, 800, 7),
     ("LM_LIST_JEAN", "Jean", MONT, 800, 9),
     ("LM_LIST_ENGINEER", "Engineer", MONT, 800, 9),
+    # ammo sharing (WEAPON page)
+    ("LM_R", "R", MONT, 900, 7),
+    ("LM_GIVE", "GIVE", MONT_I, 800, 8),
+    ("LM_MSG_FULL", "PARTNER IS FULL", MONT_I, 800, 8),
+    ("LM_MSG_NOGUN", "PARTNER HAS NO GUN", MONT_I, 800, 8),
+    ("LM_MSG_EMPTY", "NOTHING TO GIVE", MONT_I, 800, 8),
 ]
 
 

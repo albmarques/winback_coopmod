@@ -543,3 +543,264 @@ Cada imagem de mapa agrupa as linhas por **sala** (bloco "floors": `s16 início,
 - Causa: o WinBack Recompiled estica a tela dividida para widescreen e ancora cada parte da HUD do Versus numa borda com o GBI estendido do RT64 (`src/game/hud.cpp`, hooks em `func_800B4FD4`): munição à esquerda, marcadores no centro e, a partir da barra de vida (`0x800B50FC`, a chamada de `func_800CF6A8`), tudo à direita. O patch do mod em `func_800CF6A8` desenha ali também o painel de munição, o radar, a fileira de armas e o menu ao vivo, então tudo herdava a âncora da direita.
 - Correção (`func_800CF6A8` em `coop.c`): se os dois últimos comandos da display list são o "alinhar à direita" do recomp (`0x64000006`, origens `0x00400400`), o widescreen está ativo e o mod emite o mesmo comando para cada peça: barra de vida e munição à **esquerda** (deslocamento 19 quartos de pixel), radar e fileira de armas à **direita** (`-320*4 - 19`), menu ao vivo no **centro**; no fim devolve "direita" para o resto da HUD do jogador. Sem widescreen, em 4:3 ou em 1 PLAYER, nada é emitido.
 - Os valores são os de `emit_rect_align` em `hud.cpp`. Não testado em jogo.
+
+### Passo 34: P2 não nasce mais dentro da parede
+- Sintoma: dependendo da fase, o P2 nascia dentro de uma parede. O ponto dele é o do P1 deslocado `spawn_distance` para o lado escolhido (pela câmera inicial), sem olhar o cenário.
+- Correção (`spawn_fix_walls` em `coop.c`): no primeiro quadro de jogo depois de cada carga de mapa (`spawn_wall_check`, ligado em `coop_stage_load`; aí a colisão do mapa já está carregada e os dois jogadores existem), o mod lança o teste de linha livre do próprio jogo, `func_80044928(obj P1 + 0x1740, de, até)`, na altura do peito (Y + 100), do P1 até o ponto do P2 mais um raio de corpo (40). Resultado 0 = livre; 1 = parede; 2 = objeto (aceito só se o objeto atingido, `D_8011D4D4`, for o próprio P2).
+- Se bater, tenta pontos em volta do P1: o lado escolhido, o oposto, atrás, na frente e as 4 diagonais, nas distâncias `spawn_distance`, 60% dela e 60; usa o primeiro livre e guarda essa direção e distância (`spawn_guard_dist`) para o guard de sobreposição não empurrar o P2 de volta para a parede. Sem nenhum livre: P2 colado atrás do P1 (30) e o guard desligado nessa carga.
+- Log: `coop: P2 start was in a wall, moved` (ou `..., no clear spot, put next to P1`).
+- Novo símbolo: `func_80044928` (`0x470`), ver `md/COMPILACAO_MOD.md`. Não testado em jogo.
+- **Revisão (v0.2.5), depois de o P2 nascer na parede no level 14:** a primeira versão só testava dentro da janela do guard (~90 quadros com `STATE & 1`) e fora de cena, uma única vez, e só pela linha livre. Prováveis falhas: a fase começa com cena e a janela passa sem teste; ou a linha "livre" não vê uma parede de outra sala.
+  - Agora `spawn_fix_walls` roda **todo quadro** enquanto `spawn_wall_check` estiver ligado (cancelado só pela próxima carga de mapa), e só age com jogo ativo e sem cena (`in_cutscene`, `CUTSCENE_FLAG`).
+  - Um ponto só é aceito com **linha livre e o P2 na mesma sala do P1** (`+0x8E`). A sala de um ponto só existe depois que o jogo atualiza o P2, então cada candidato é testado de verdade: o P2 vai para lá, espera 2 quadros (`spawn_wait`), confere a sala e a linha, e só então passa ao próximo (`spawn_try` 0..23).
+  - Log em cada decisão: `coop: spawn start ok | start blocked | moved to a clear spot | no clear spot, by P1 ... P1 room XXXX P2 room XXXX line N` (`line`: 0 livre, 1 parede, 2 objeto).
+- **Revisão (v0.2.6): o P2 ficava "teletransportando" em volta do P1.** A v0.2.5 colocava o P2 em cada ponto candidato e esperava 2 quadros para ler a sala; com candidatos falhando, o P2 pulava por até 24 pontos. Causa provável de todos falharem: a linha saía do peito do P1 e batia no próprio P1 (resultado 2 com `D_8011D4D4` = objeto do P1), o que contava como bloqueio.
+  - Agora tudo é decidido **num quadro só** e o P2 é movido **no máximo uma vez**. O teste espera 4 quadros de jogo depois da carga do mapa (para a sala do P2 ser a real) e roda uma vez.
+  - A linha começa 30 unidades à frente do P1, na direção do ponto, e acertar o P1 ou o P2 não conta como bloqueio.
+  - A sala (`+0x8E` igual à do P1) só é conferida no ponto de nascimento original, onde o P2 já está; os pontos alternativos são escolhidos só pela linha livre.
+  - Log: `coop: spawn start ok | start blocked | moved to a clear spot | no clear spot, by P1 ... P1 room XXXX P2 room XXXX line N`.
+
+### Passo 35: P2 nasce no ponto do P1 (sem deslocamento) — causa real dos problemas de nascimento e de salas
+- Sintomas, em várias fases (levels 14 e 16, galpão): P2 dentro da parede; chão e paredes pretos na vista do P2; com P1 e P2 lado a lado, o galpão não aparecia na vista do P2 (os dois "flutuando" sobre o preto e a área externa ao fundo).
+- Causa: a sala de um jogador não é calculada pela posição a cada quadro. Ela vem do ponto de início: `func_800593EC` grava em `+0x8A` o marcador de início (tabela `0x8016A39A`; o mod copia o do P1 para o P2) e em `+0x8E` a sala dele (`func_8003CB80`); depois a sala muda conforme o jogador anda, e `func_8003C58C` copia `+0x8E` para `D_8016A410 + p*4`, que decide quais salas cada vista desenha. O mod colocava o P2 **deslocado** do ponto do P1 (`spawn_distance`, 100 por padrão): perto de uma parede ou passagem, isso o punha numa área de outra sala enquanto o jogo seguia achando que era a sala do P1. Resultado: colisão das paredes da sala errada (P2 dentro da parede), salas erradas desenhadas na vista dele, e o erro continuava ao andar.
+- Confirmado pelo usuário: com `spawn_distance = 0` tudo fica normal.
+- Mudanças (v0.2.7): `spawn_distance` padrão **0** (descrição avisa do risco acima de 0); removida a checagem de parede das v0.2.4-0.2.6 (`spawn_fix_walls`), que também teleportava o P2 e podia causar o mesmo problema. O guard de sobreposição só age com `spawn_distance > 0`, como antes.
+- Possível melhoria futura: com distância > 0, afastar o P2 **andando** (entrada de controle simulada nos primeiros quadros) em vez de teleportar, para o jogo acompanhar a sala.
+
+### Passo 36: Chefes no co-op (alvo, visibilidade) e barra de vida do P2
+- Os chefes não usam o update dos inimigos (`func_8002C830` → `func_800337A8`): `func_8002C86C` dá a eles `func_800AD9F0` quando `+0x92 == 2`. Esse update roda a lógica do chefe (`func_800ADCF8`) só com `D_801390C0[0]` (P1) vivo, senão `func_8009F238`. Como o mod só interceptava `func_800337A8`:
+  - o chefe só perseguia o P1, e parava se o P1 caísse mesmo com o P2 vivo;
+  - a marca de "escondido fora da sala" (`+0xF4 & 0x100`) nunca era limpa para ele: o chefe ficava invisível quando o jogo achava que ele estava fora da sala desenhada (provável causa do primeiro chefe sumindo).
+- Correção: os hooks viraram `enemy_begin_common(obj, boss)` / `enemy_end_common()`, chamados de `func_800337A8` (boss = 0) e de `func_800AD9F0` (boss = 1). Para o chefe: mesma troca de alvo (jogador vivo mais perto, ou a divisão do Hard/Brutal) e mesma regra de visibilidade (sala de qualquer jogador); sem a IA Smart/Elite (`ai_lv = 0`, `ai_tune_senses` pulado), porque os estados dos chefes têm outra numeração.
+- Barra de vida do P2: a linha 1 da tabela de vida mostrada (`D_801B1168 + 2`) é a da barra do chefe na História (`func_800D24D4` grava a vida do chefe × 10). A barra do P2 lia essa linha, então nas lutas com chefe podia mostrar a vida do chefe. Agora o rastro do P2 é animado pelo próprio mod (`p2_shown10`: cai 1/8 da diferença por quadro, no mínimo 4; acompanha cura na hora). O P1 continua com a linha 0 do jogo.
+- Não testado em jogo.
+
+### Passo 37: Barra de vida do chefe no meio da tela (`src/boss_bar.h`, opção `boss_bar`)
+- A barra de chefe do jogo (`func_800CF76C`, linha 1 da tabela de vida mostrada) não é desenhada pela HUD do Versus que o co-op usa, então no co-op a vida do chefe não aparecia.
+- Valores do jogo: `D_801D362C` (u32) liga a barra (posto em 1 quando o chefe é criado, `func_8002C86C`/`func_800ADE7C`; zerado na carga da fase, `func_80034364`); `D_801BE480` (u8) é o índice do chefe (tipo `+0x16F5 - 0x2B`); `D_801BE482` (s16) é a vida, iniciada com o primeiro byte da entrada de 6 bytes `D_8010F668 + índice*6` (`func_800ADA40`), que o mod usa como vida máxima.
+- Desenho: textura própria 256x24 RGBA16 em `0x80580000` (sprite em `0x80512E00`), mostrada em escala 0,5 (128x12 na tela), centralizada em x = 160 e com o topo em y = 122, logo abaixo da linha da tela dividida (y 120). Painel inclinado escuro com borda clara, "BOSS" em fonte 5x7 (2x), barra vermelho-laranja e rastro amarelo que desce 1/16 da diferença por quadro (mínimo 3). Só redesenha a textura quando a barra muda. Some quando a vida chega a 0 e o rastro acaba.
+- Desenhada uma vez por quadro, na chamada da HUD do P2 (`func_800CF6A8` com `player_idx == 1`), com âncora no centro no widescreen (`hud_anchor`).
+- Opção `boss_bar` (On/Off, padrão On). Não testado em jogo (a aparência foi conferida numa prévia gerada no PC com o mesmo código de desenho).
+
+### Passo 38: Chefes mais duros no co-op (`src/boss_ai.h`, opção `boss_toughness`)
+- Causa da facilidade: `func_800AF368(dados)` é o tratamento de tiro no chefe (chamado de `func_800AE4BC`, dentro do cérebro `func_800ADCF8`). Todo acerto zera o contador de ações `+0x1750` (e `+0x154`/`+0x158`) e põe o chefe no estado de "levou dano" `+0x16EC = 0xCE` com animação em `+0x16EE`. Com duas armas se alternando, o chefe fica preso apanhando e quase não ataca.
+- Dano do jogo nessa função: tiro (`+0x16F0 & 0x08`) tira `(s16)(lb +0x176B * (4 ou 5 - D_8010F6AC[dificuldade])) / combo²` de `D_801BE482` (combo `+0x1798`, janela `+0x174D` de 90 quadros); bit `0x40` tira 5; senão 20 (explosão); a trapaça `D_8016A40E & 0x20` zera. Se a vida chega a 0, o bloco de morte roda dentro da própria função (estado `0xCD`, sons, `func_8004DE48`).
+- Tabela `D_8010F668` (6 bytes por chefe, ROM 0xEAA68): byte 0 = vida máxima (150 na maioria, 130 e 100 em dois), bytes 1, 2, 4 e 5 = limiares de vida para mudança de fase. Por isso o mod não aumenta a vida (o u8 não cabe 300 e as fases mudariam de lugar): ele reduz o dano.
+- Como funciona: no início da função a vida é levantada em 10000 (o jogo não consegue matar o chefe lá dentro); no retorno, a perda que o jogo aplicou é escalada (55% ou 40%, com resto acumulado) e gravada. Se chegar a 0, o mod repete o bloco de morte do jogo (0x800AF6B0..0x800AF7C0: `+0x88 = 0x4000`, `+0x174D = 0`, estado `0xCD`, `+0xF4 &= ~0x20000000`, `D_8015890F[slot*22] = 0xFF`, `+0x176B = 0`, `D_80159A36++`, `func_8009C2E4(7, +0x1766)` e as chamadas `func_8004DE48(0x80002, 0x101..0x10B, 9, 0)` para os tipos 0x2B/0x2C).
+- Superarmadura: depois de um tranco liberado, os próximos acertos por 45 quadros (Tough) ou 90 (Brutal) ainda tiram vida, mas o mod devolve o estado, a animação, `+0x88` e os contadores que o chefe tinha antes do tiro, então ele continua o ataque.
+- Log (opção `log`): `boss: hit game AAAA -> BBBB hp CCCC -> DDDD armour X` (hex): perda que o jogo deu, perda aplicada, vida antes e depois, se a superarmadura segurou o tranco.
+- Não testado em jogo.
+
+### Passo 37b: Barra do chefe no estilo da HUD (v0.3.1)
+- Visual novo feito pelo mesmo desenho da barra LIFE: `tools/make_boss_hud.py` reaproveita as cores, o friso de aço, o poço e as letras retas inclinadas de `tools/make_hud_frame.py`. Placa "BOSS" à esquerda (mais alta, como a placa LIFE), barra longa com a ponta inclinada, frisos vermelhos (P1 azul, P2 laranja) e três marcas de perigo na ponta. Gera `assets/hud/hud_boss.png` (2x) e `src/boss_tex_data.h` (textura 288x38 RGBA5551, linhas da vida 14..21 com as bordas `boss_bar_x0/x1`).
+- Em tempo de execução o mod copia a moldura uma vez e só repinta as 8 linhas da vida, com o mesmo degradê de 4 tons da barra verde (em vermelho) e o rastro em âmbar.
+- Posição: 144x19 na tela, centralizada (x 88), com a base na linha divisória (y 97..116), entre o painel de munição e o radar da vista de cima. Na posição antiga (y 122) ela ficava em cima da LIFE do P2. Agora é desenhada na chamada de HUD do P1 (`player_idx == 0`), dentro da área da vista de cima.
+
+### Passo 37c: Barra do chefe no meio das duas telas (v0.3.2)
+- Agora a barra fica centralizada sobre a faixa preta entre as vistas (y 110..129, a faixa fica em ~117..121).
+- Cada vista corta o desenho na própria área: `func_80026A10` grava um `G_SETSCISSOR` (0xED) por vista com a tabela `D_8010382C`. Para a metade de cima não sumir, a barra é desenhada na chamada de HUD do P2 (depois das duas vistas), e o mod procura no display list o último `G_SETSCISSOR` (voltando de 8 em 8 bytes a partir de `D_801D2C80`), grava uma cópia com `uly = 0`, desenha a barra e grava de novo o recorte original. Se não achar o comando, desenha sem mexer no recorte.
+
+### Passo 37d: A linha preta cobria a barra (v0.3.3)
+- Na v0.3.2 a barra aparecia, mas cortada pela faixa preta. Essa faixa não é falta de recorte: é a linha divisória que a HUD do Versus (`func_800B5400`) desenha depois das HUDs dos dois jogadores, com `func_8007CBC8(0,0,0,0xFF)` (preto) e `func_8007CBEC(&D_801D2C80, 0, 0x77, 0x140, 0x77, 4)` (linha de 4 px em y 119). Com 3 ou mais jogadores há também a vertical em x 158.
+- Agora a barra é desenhada logo depois dessa chamada (`RECOMP_HOOK`/`RECOMP_HOOK_RETURN` em `func_8007CBEC`, só quando os argumentos são os da linha horizontal e há 2 jogadores). Nesse ponto o recorte é o da HUD do Versus, (14,14)-(306,230), que cobre a barra inteira. A troca de recorte da v0.3.2 foi removida. Fora do bloco widescreen do `hud.cpp`, o RT64 mantém o sprite no centro 4:3, então não há âncora.
+
+### Passo 39: Compartilhar munição no menu ao vivo (v0.3.4)
+- Na página WEAPON do menu ao vivo (D-pad para baixo, aba WEAPON), **R** entrega ao parceiro a munição da arma selecionada, um pente por vez: submetralhadora 30 (reserva `0x801587C0`), shotgun 8 (reserva `0x801587C1`), foguete 1 (`0x801587CB`), C4 1 (`0x801587C4`). Se tiver menos, entrega o que tiver. A pistola não entra (munição infinita).
+- Regras (`lm_give` em `coop.c`):
+  - Submetralhadora e shotgun: só a reserva (o pente na arma fica), e o parceiro precisa ter a arma (`0x801587C6` / `0x801587C7`), senão aparece "PARTNER HAS NO GUN".
+  - Foguete e C4: a contagem é a própria arma, então o parceiro passa a ter o lançador/C4 com o primeiro recebido. Quem está segurando fica com pelo menos 1. Teto do parceiro: 4 foguetes, 7 C4 (o que a trapaça de munição infinita põe); 250 para as reservas.
+  - Mensagens: "SENT TO PARTNER", "PARTNER IS FULL", "PARTNER HAS NO GUN", "NOTHING TO GIVE", por 60 quadros no lugar da dica "R: GIVE TO PARTNER". A página mostra também "PARTNER nn" (a munição do parceiro para essa arma).
+  - Os valores novos são gravados em `pick_last`, para a redução de coleta por dificuldade (`coop_pickup_scale`) não tratar a entrega como item pego.
+  - Só funciona com inventários separados (opção `inventory` = Separate); com inventário compartilhado a dica não aparece.
+- Rótulos novos em `tools/gen_menu_tex.py` (`LM_GIVE_HINT`, `LM_PARTNER`, `LM_MSG_*`). Na página WEAPON o nome da arma e a linha CAPACITY/RESERVE sobem 4 px quando a linha de compartilhamento aparece; CAPACITY começa em x 150 e RESERVE em x 226 (antes o "30" da capacidade encostava em RESERVE).
+- Log (opção `log`): `coop: P1 gave ammo to P2` / `coop: P2 gave ammo to P1`.
+
+### Passo 39b: Interface do compartilhamento integrada à página WEAPON (v0.3.5)
+- A linha de texto solta virou uma faixa no rodapé da página (`lm_share_strip` em `live_menu.h`, x 92..303, y 87..99), no mesmo estilo das células verde-azuladas da lista de armas: `[R] GIVE 30  >>>  [retrato do parceiro] 12`.
+  - Botão "R" cinza, no estilo dos botões do menu (`lm_button`).
+  - "GIVE n" mostra quanto o R vai entregar agora (`lm_give_amount` em `coop.c`). Se não dá, o motivo aparece antes de apertar, em vermelho: PARTNER IS FULL / PARTNER HAS NO GUN / NOTHING TO GIVE, e as setas ficam apagadas.
+  - Setas e moldura do retrato na cor do parceiro (P1 azul, P2 laranja). Retrato 12x12 tirado do retrato 56x56 da página TEAM; ao lado, a munição do parceiro para aquela arma ("-" se ele não tem a arma).
+  - Depois de um R bem-sucedido, a faixa acende e o número do parceiro fica verde, apagando em 30 quadros (`give_flash`).
+- Rótulos: saíram `LM_GIVE_HINT`, `LM_PARTNER` e `LM_MSG_SENT`; entraram `LM_R` e `LM_GIVE`.
+
+### Passo 40: Inventário do P2 no checkpoint e no continue (v0.3.6)
+- O jogo guarda um checkpoint com `func_8009C8E0`: copia as flags da missão (`D_80137990`, 0x89C bytes) e o bloco de progresso (`D_80158760`, 0x12E0 bytes, que inclui o inventário do P1) para `D_8011DAB0` / `D_8011E350`. Isso acontece no início da fase (`func_8004BD7C`) e nos checkpoints do meio (`func_8009AA9C`). A tela de continue (`func_800904E4`) restaura tudo com `func_8009C998`.
+- Antes, o inventário do P2, que fica na memória do mod (`inv_p2`), não entrava nisso: depois de um continue o P1 voltava ao inventário do checkpoint e o P2 ficava com o da hora da morte.
+- Agora:
+  - `RECOMP_HOOK` em `func_8009C8E0`: copia `inv_p2` para `inv_cp`. Se o inventário do P2 estiver trocado para dentro do jogo naquele momento (`inv_active != 0`), destroca antes e retroca no retorno, para o checkpoint do jogo guardar o do P1 (antes ele guardaria o do P2).
+  - `RECOMP_HOOK_RETURN` em `func_8009C998`: as variáveis do jogo voltam a ser do P1 (`inv_active = 0`), `inv_p2` recebe a cópia do checkpoint, e `pick_last` é zerado (-1) para a redução de coleta por dificuldade não tratar a volta da munição como item pego (isso também afetava o P1).
+  - Se ainda não havia cópia (checkpoint antes do P2 ter inventário), `inv_p2_valid = 0`, e o P2 recebe de novo uma cópia do P1 no início da fase, como numa sessão nova.
+  - Novo jogo (`func_8004DA40`) apaga a cópia.
+- Não coberto: os checkpoints gravados do Level Select do WinBack Recompiled (`saves/checkpoints/`) copiam os blocos direto, sem passar por essas funções. Ao carregar um deles, o P2 fica com o inventário que já tinha.
+- O save no Controller Pak continua só com o progresso do P1. Ao carregar um save, o P2 começa com uma cópia do inventário do P1.
+- Log (opção `log`): `coop: checkpoint saved (P2 inventory kept)`, `coop: continue, P2 inventory restored` / `recopied from P1`.
+
+### Passo 41: "1 PLAYER / 2 PLAYER" centralizado como LOAD GAME / NEW GAME (v0.3.7)
+- A tela 1P/2P do mod reaproveita a lista de quantidade de jogadores do Versus (estado 22, tabela `0x8010DD00`, 3 itens com o terceiro invisível). `func_80091C48` desenha essa lista com `func_8008FF34(&D_801D2C80, tabela, 3, cursor, 0x9E, passo)`, enquanto LOAD GAME / NEW GAME usa `func_8008FF34(..., D_8010DCF8, 2, cursor, 0xA5, passo)`. Por isso os dois itens ficavam 7 px mais altos que o LOAD/NEW (o espaço era de 3 linhas).
+- `func_8008FF34` (0xF0) foi reescrita no mod (`RECOMP_PATCH`) com a mesma lógica: para cada item, `func_8007CFE4(sprite, selecionado)`, `func_8007BAAC(sprite, 255, 255, 255, selecionado ? 0xFF : 0x55)`, x = (320 - largura) / 2, `func_8007B8F4`, y += passo. A única diferença: com a tela 1P/2P do mod aberta, a lista tem 2 itens e começa em y 0xA5, centralizada no mesmo lugar que LOAD GAME / NEW GAME.
+
+### Passo 42: Fogo amigo pela linha real do tiro (v0.3.8)
+- Antes: o tiro era detectado pela queda do pente, e o acerto era um cone ao longo da direção do corpo (`+0x64` + `+0x158`) com largura `35 + 3% da distância`, sem saber onde o tiro parava. Mirar na parede ao lado do parceiro contava como acerto.
+- Agora o acerto usa o raio do próprio tiro do jogo. `func_800B8FB0`, chamada pela atualização da bala `func_800B876C`, monta o raio com o espalhamento da arma:
+  - `func_8004221C(origem, fim, ...)`: origem e fim do raio (origem + direção * alcance). O mod lê os dois na primeira chamada dentro do tiro.
+  - `func_8004387C(origem, ponto)`: só calcula a distância entre dois pontos; dentro do tiro é chamada quando o raio bate numa parede (`func_80044160` retorna 1), com o ponto de impacto. O mod lê esse ponto.
+  - No retorno de `func_800B8FB0` (só para balas dos jogadores, `ai_bullet_owner`): acerta se o centro do corpo do parceiro (posição + 80 em y) estiver à frente (t > 10), antes da parede (t < parede - 8), a menos de 26 unidades na horizontal da linha do tiro e a menos de 95 na vertical.
+- O tiro (queda do pente, `coop_friendly_fire`) e um raio que acertou o parceiro são pareados se estiverem a no máximo 3 quadros de distância; o dano é aplicado uma vez por tiro (os chumbos da shotgun não multiplicam). Dano igual ao de antes (pistola 8, submetralhadora 5, shotgun 20 perto / 8 longe).
+- Log (opção `log`): `coop: ff ray HIT/mis t … wall … side … up …` (hex float: distância até o parceiro na linha, distância até a parede ou `none`, desvio horizontal, desvio vertical) e `coop: ff P1 hit P2`. Se o raio de 26 / altura de 95 estiverem apertados ou folgados demais, dá para ajustar por esses números.
+
+### Passo 42b: Correção, o fogo amigo tinha parado (v0.3.9)
+- Na v0.3.8 o mod pegava a primeira chamada de `func_8004387C` dentro do tiro como a da parede. Só que o passo do raio (`func_80044160`) também chama `func_8004387C` (2 vezes), assim como `func_8004221C` (1 vez). O "ponto da parede" lido ficava colado no atirador, a parede parecia estar a poucas unidades e nenhum tiro chegava ao parceiro.
+- Agora o mod guarda a última chamada de `func_8004387C` antes de `func_8004221C`, e só a aceita como parede se o primeiro ponteiro dela for o mesmo ponteiro de origem que o tiro passa para `func_8004221C` (a variável de origem do tiro, `sp+0x38` em `func_800B8FB0`). As chamadas internas do passo do raio usam outros ponteiros. As chamadas de dentro de `func_8004221C` são ignoradas.
+
+### Passo 42c: O raio certo é o de `func_800BABFC` (v0.3.10)
+- O log da v0.3.9 mostrou `coop: shot by P1` sem nenhuma linha `coop: ff ray`: o tiro do jogador não passava pelos ganchos. A atualização da bala `func_800B876C` chama primeiro `func_800BABFC(dados, cano)` (0x800B8AEC, com a posição do cano calculada pela tabela `D_8010D472` por arma). `func_800B8FB0` só roda depois, se `func_800BABFC` retornar diferente de zero.
+- `func_800BABFC` (0x6F8) tem o mesmo formato de raio: `func_80044160` em passos, `func_8004387C(sp+0x38, sp+0x28)` na parede, `func_8004221C(sp+0x38, sp+0x98)` com origem e fim, `func_8004394C`, `func_80044E98`. Os ganchos de início e retorno do teste agora ficam nela; os de `func_8004221C` e `func_8004387C` não mudaram (mesmo teste do ponteiro de origem).
+- Linhas novas no log para diagnóstico:
+  - `coop: ff no player ray in the last 3 frames`: o tiro foi visto pelo pente, mas nenhum raio de bala de jogador passou.
+  - `coop: ff ray not seen`: bala de jogador sem a chamada do raio.
+  - `coop: ff ray other room`: o parceiro está em outra sala.
+
+### Passo 42d: Raio do tiro reconhecido pela origem (v0.3.11)
+- O log da v0.3.10 mostrou `coop: ff no player ray in the last 3 frames` em todos os tiros. A tarefa de `func_800B876C` não é a bala do jogador: `func_800B84C0` a cria a partir de `func_800593EC` (criação de personagem) só para os tipos `+0x16F5` 0x33/0x34, com o dono sendo o objeto da arma (`+0x1740`). O jogador nunca era reconhecido como dono, e o caminho do tiro do jogador não foi identificado.
+- Agora o mod não depende de saber qual função faz o tiro: observa todas as chamadas de `func_8004221C(origem, fim, ...)`, a função de raio que todos os tiros usam. Um raio é do jogador k se começar junto ao corpo dele (até 100 na horizontal e 260 na vertical da posição, o mais próximo dos dois) e tiver mais de 400 de comprimento. A parede continua sendo a última chamada de `func_8004387C` antes, com o mesmo ponteiro de origem. O teste contra o corpo do parceiro e o pareamento com o tiro (até 3 quadros) não mudaram.
+- Diagnóstico: se um tiro não achar raio, o log mostra `coop: ff no ray at the shooter; closest origin 0x… rays 0x…` (distância horizontal da origem de raio mais próxima ao atirador, float em hex, e quantos raios o jogo fez desde o último tiro). As linhas `coop: ff ray HIT/mis` aparecem quando um raio do jogador acerta, ou quando há tiro pendente.
+- Corrigidas as posições dos números nas linhas de log do fogo amigo (estavam deslocadas).
+
+### Passo 42e: Volta ao fogo amigo sem ganchos de raio (v0.3.12)
+- A v0.3.11 fez o jogo travar e não abrir. Foi a primeira versão em que os ganchos de `func_8004221C` e `func_8004387C` faziam conta em toda chamada: essas funções são usadas o tempo todo pelo jogo (visão dos inimigos, câmera, tiros). Nas versões anteriores os ganchos saíam logo no início. Não confirmei a causa exata, porque o código do runtime que chama os ganchos não está disponível aqui.
+- Todos os ganchos de raio foram removidos (`func_800B8FB0`, `func_800BABFC`, `func_8004221C`, `func_8004387C`), junto com o pareamento de tiro e raio.
+- O fogo amigo voltou a ser o da v0.3.7, com o cone mais estreito: o tiro (queda do pente) acerta o parceiro se ele estiver à frente (5 a 2500 de distância), na mesma altura (diferença menor que 150) e a menos de `24 + 1,2% da distância` da linha da mira (antes `35 + 3%`). A mira é o ângulo do corpo `+0x64` mais a mira livre `+0x158`. Ainda não há teste de parede: atirar através de uma parede fina ainda acerta, mas mirar na parede ao lado do parceiro deixa de contar a partir de uns 25-35 unidades de distância lateral.
+- Log: `coop: ff HIT/mis yaw … dx … dz … along … side …` (posições dos números corrigidas).
+- Achado do código do jogo, guardado para uma próxima tentativa: a tarefa de `func_800B876C` é criada por `func_800B84C0` a partir de `func_800593EC`, só para os tipos de personagem 0x33/0x34; o dono é o objeto da arma (`+0x1740`), não os dados do jogador. O caminho do tiro do jogador ainda não foi achado.
+
+### Passo 42f: De volta ao fogo amigo pelo raio (v0.3.13)
+- O travamento da v0.3.11 foi momentâneo: o jogo abriu depois, e o fogo amigo pelo raio funcionou melhor. A v0.3.13 traz de volta exatamente o código da v0.3.11 (Passo 42d): reconhecimento do raio do tiro pela origem em `func_8004221C`, parede pela chamada de `func_8004387C` com o mesmo ponteiro de origem, pareamento com o tiro em até 3 quadros. O arquivo gerado tem o mesmo tamanho da v0.3.11.
+- O cone sem ganchos da v0.3.12 (Passo 42e) foi descartado.
+
+---
+
+### Passo 43: Correção da Escada para o Player 2 (Engineer) (`0x8010E0F8` / Evento 15)
+- **Sintoma:** Quando o Player 2 (Engineer) descia ou subia uma escada, a cutscene da escada não iniciava e ele ficava preso flutuando no ar na animação inicial da escada. Com o Player 1 (Jean-Luc) funcionava normalmente.
+- **Causa descoberta na ROM:**
+  1. Ao apertar Ação perto da escada (`0x800A9C18` dentro de `func_800A8ED0`), o jogo **não** enfileira evento via `func_8004DE48`. Ele chama `func_8009C860(id)` $\rightarrow$ `func_8009C2E4(30, id)` apenas para validar se a escada está liberada e coloca o jogador na ação `+0x16EC = 23` (subestado `+0x16F0 = 11` para descer, `12` para subir). Como `func_8004DE48` não era chamada, `trigger_player` permanecia `0` (Jean-Luc).
+  2. No handler da ação `23` (`func_800626E0`), quando a animação `+0x16C8` passa do quadro `18.0f`, o jogo escreve `U16(0x8010E0F8) = 1` (`0x80062744`, mesmo flag usado pela ação `9` de pular mureta em `0x80060550`). A partir do quadro `21.0f` (`0x80062760`), a ação `23` zera as velocidades e **para de somar o deslocamento da animação (`+0x140..+0x150`) na posição `(X, Y, Z)`**, aguardando que o script da escada chame `func_8009E1E0(3)` para assumir o movimento.
+  3. Quando `func_800944E0` lia `U16(0x8010E0F8) == 1` (`0x800945FC`), ela limpava o flag e chamava `func_8009C2E4(15, 0)`. Porém, em `coop_event_dispatch_begin` (`func_8009C2E4`), o mod só olhava `trigger_player` (que era `0`, pois a checagem de `act1 == 23` ficava dentro de `func_8009E1E0`, que só roda *depois* que o script passa pelas condições de `func_8009C2E4`!). Assim, `func_8009C2E4(15, 0)` avaliava a condição da escada (`func_8009BBB8`) olhando para o Jean-Luc (`PLAYER_PTRS[0]`), via que ele não estava na escada e abortava o script sem chamar `func_8009E1E0(3)` nem `func_80098F20`.
+- **Correção (`coop_event_mgr_begin` e `coop_event_dispatch_begin`):** Antes de `func_800944E0` consumir `0x8010E0F8 == 1` e logo na entrada de `func_8009C2E4`, o mod inspeciona `U16(SLOT0_DATA/SLOT1_DATA + 0x16EC)` para as ações diretas (`23` = escada, `9` = mureta, `25` = switch, `12`/`13` = porta), define `trigger_player = 1` e troca os ponteiros antes da avaliação do script.
+
+---
+
+## 6. Pesquisa Técnica: Modo Primeira Pessoa (First-Person / FPS Mode)
+
+Esta seção documenta a engenharia reversa do pipeline de câmera, esqueleto/ossos, mira laser e renderização de personagens na ROM (`baserom.us.z64`) para implementação de um modo **Primeira Pessoa (FPS)** (tanto em 1P quanto em Split-Screen Co-op, ou híbrido: ex. 3ª pessoa andando e 1ª pessoa ao mirar/cover).
+
+### 6.1. Como o Motor Calcula e Usa a Câmera a Cada Frame
+
+1. **Objeto e Struct da Câmera (`CAM_PTRS` em `0x80179280`):**
+   - Cada jogador possui uma tarefa de câmera (`func_80034840`), cujo callback de update é **`func_80034DBC(cam_obj)`** (`0x80034DBC..0x80035174`), onde:
+     - `cam_data = U32(cam_obj + 0x2C)` (ponteiro também guardado em `CAM_PTRS[idx]` = `0x80179280 + idx * 4`);
+     - `player = U32(U32(cam_obj + 0x20) + 0x2C)` (jogador dono da câmera);
+     - `idx = S16(cam_data + 0x18)` (`0` para P1, `1` para P2).
+   - Campos principais de `cam_data`:
+     - `+0x00, +0x04, +0x08` (`float[3]`): posição `Eye (X, Y, Z)` calculada pela câmera;
+     - `+0x0C, +0x10, +0x14` (`float[3]`): ângulos `pitch` (`+0x0C`), `yaw` (`+0x10`) e `roll` (`+0x14`) da câmera;
+     - `+0x28, +0x2C, +0x30` (`float[3]`): posição `LookAt (X, Y, Z)` (alvo para onde a câmera olha);
+     - `+0x44` (`float[3][3]`): matriz de rotação 3x3 da câmera, recalculada no fim de `func_80034DBC` (`0x80035144`);
+     - `+0xEC` (`s16`): modo atual da câmera (despachado pela tabela `0x80103D80[mode]`, modos `0..9`);
+     - `+0x10C` (`float`) e `+0x148` (`float`): offsets verticais (`Y`) de elevação/inclinação da visão.
+
+2. **Publicação do `Eye` e `LookAt` para o Renderizador (`func_80026760` e `func_800266D0`):**
+   - No final de `func_80034DBC` (`0x80035004` e `0x80035044`), a câmera copia suas coordenadas finais para os 6 arrays globais indexados por `idx` (`0` = P1, `1` = P2, stride de 4 bytes):
+     - **`func_80026760(eye_x, eye_y, eye_z, idx)`** (`0x80026760`): grava o **Eye** global:
+       - `Eye X`: `F32(0x8015D6D8 + idx * 4)` *(nota: `lui 0x8016` + signed `0xD6D8` = `0x8015D6D8`)*
+       - `Eye Y`: `F32(0x801B0CE8 + idx * 4)`
+       - `Eye Z`: `F32(0x80178FB0 + idx * 4)` *(nota: `lui 0x8018` + signed `0x8FB0` = `0x80178FB0`)*
+     - **`func_800266D0(look_x, look_y, look_z, idx)`** (`0x800266D0`): grava o **LookAt** global:
+       - `LookAt X`: `F32(0x80158748 + idx * 4)`
+       - `LookAt Y`: `F32(0x8015D268 + idx * 4)`
+       - `LookAt Z`: `F32(0x801C3808 + idx * 4)`
+   - Na hora de desenhar cada viewport (`func_80025F10` $\rightarrow$ `0x800263C0..0x80026450`), o motor monta a matriz `guLookAt` do N64 lendo diretamente esses 6 floats globais para o viewport `s0` (`0` ou `1`).
+
+---
+
+### 6.2. Posição Exata dos Olhos, Cabeça e Arma na Struct do Jogador
+
+O motor já calcula e mantém em tempo real, a cada frame, a posição 3D mundial da cabeça/olhos e a matriz 3D da mão direita (arma) de cada jogador:
+
+1. **Coordenada Mundial dos Olhos/Cabeça (`player + 0x0CD4`):**
+   - Durante o cálculo das matrizes dos 15 ossos do esqueleto (`func_80069D44`, em `0x8006A454..0x8006A4B8`), o motor extrai a translação mundial do **osso 8 (cabeça)** da matriz `player + 0x1578` e grava em:
+     - `F32(player + 0x0CD4)`: **Head/Eye X** no mundo;
+     - `F32(player + 0x0CD8)`: **Head/Eye Y** no mundo (acompanha automaticamente se o jogador está em pé, agachado, em cover, rolando ou subindo escada!);
+     - `F32(player + 0x0CDC)`: **Head/Eye Z** no mundo.
+   - É exatamente esse ponto `player + 0x0CD4` que a IA dos inimigos usa para testar linha de visão (`func_80044D98` em `func_800CE718`) e para mirar na cabeça do jogador (`0x8005A43C`).
+
+2. **Direção do Olhar / Mira do Jogador:**
+   - **Andando / Livre (`+0x16EC == 0, 1, 2`):**
+     - `F32(player + 0x0064)`: ângulo horizontal (`yaw`) para onde o corpo está virado;
+     - `F32(cam_data + 0x0010)`: `yaw` da câmera (controlado por C-Left/C-Right ou analógico direito via `winback_camera_analog`).
+   - **Mirando (`+0x16EC == 3` ou atirando `+0x16EC == 4`):**
+     - `F32(player + 0x0064) + F32(player + 0x0158)`: `yaw` exato da mira (corpo + offset horizontal da mira livre);
+     - `F32(player + 0x0154)`: `pitch` vertical da mira livre (inclinação para cima/baixo).
+   - **Matriz da Mão Direita / Arma (`player + 0x1698`):**
+     - O osso 13 (mão direita que segura a arma) tem sua matriz 4x4 mundial em `player + 0x1698` (e o osso da cabeça em `player + 0x1578`). É de `player + 0x1698` que saem a linha do laser (`0x80029720`) e a origem do tiro (`func_800B8FB0` em `0x800B9010`).
+
+---
+
+### 6.3. Ocultação Seletiva da Cabeça/Corpo (Evitar Clipping na Câmera)
+
+Se colocarmos o `Eye` da câmera exatamente em `player + 0x0CD4` (dentro da cabeça do personagem), a malha 3D da cabeça bloquearia a visão. A engenharia reversa de **`func_80057100`** (`0x80057100..0x800577FC`, função que desenha os personagens humanos) revela duas formas muito limpas de lidar com isso:
+
+1. **Abordagem A — Ocultar apenas a Cabeça (mantendo braços, arma e pernas visíveis em 1ª pessoa / "True FPS Viewmodel"):**
+   - Em `func_80057100` (`0x80057608..0x80057788`), o jogo faz um loop `bone_idx = 1..15` (`$s3`) lendo a tabela de ponteiros de Display List dos 15 ossos apontada por **`U32(player + 0x1744)`**:
+     - Se `dl_offset == -1` (`0xFFFFFFFF`, testado em `0x80057638`), o jogo pula o desenho daquele osso!
+     - O **osso 8** (cabeça) é a entrada `bone_idx = 8` dessa tabela (e as juntas dinâmicas do pescoço são montadas em `func_8006C68C`).
+   - Melhor ainda: como em `func_80025F10` o jogo desenha um viewport por vez (`vp = U8(0x8016A40F)` = `0` para a tela de cima/P1, `1` para a tela de baixo/P2):
+     - No Co-op Split-Screen, quando `vp == 0` (desenhando a tela do P1), o P1 está em 1ª pessoa para si mesmo, mas **o P2 olhando para o P1 deve ver o corpo inteiro do P1 normalmente**!
+     - E quando `vp == 1` (desenhando a tela do P2), o P2 está em 1ª pessoa para si mesmo, mas vê o P1 inteiro!
+
+2. **Abordagem B — Ocultar o Corpo do Próprio Jogador Apenas no Seu Próprio Viewport (mantendo a Mira Laser e Sombras):**
+   - Em `func_80057100` (`0x80057520..0x80057530`):
+     ```mips
+     0x80057520: lw  $v0, 0x00F4($s2)
+     0x80057524: lui $v1, 0x2000
+     0x80057528: ori $v1, $v1, 0x0100
+     0x8005752C: and $v0, $v0, $v1
+     0x80057530: bne $v0, $zero, 0x800577D4  # Pula o desenho dos 15 ossos e juntas!
+     ```
+   - Antes desse `bne` (`0x800571F0..0x800573FC`), `func_80057100` **já desenhou a sombra no chão e o modelo da arma na mão + mira laser** (`func_8006ADC4` / `0x80057250`)!
+   - Ou seja: se colocarmos um `RECOMP_HOOK("func_80057100")` que, quando `player == PLAYER_PTRS[U8(0x8016A40F)]` (o jogador dono do viewport que está sendo renderizado naquele instante), liga temporariamente o bit `0x100` em `U32(player + 0xF4)` (e restaura no `RECOMP_HOOK_RETURN("func_80057100")`):
+     - O jogador **não desenha o próprio corpo na sua câmera** (zero clipping de cabeça/tronco), mas **continua desenhando sua arma e seu laser**, e **continua 100% visível na tela do parceiro**!
+
+---
+
+### 6.4. Como Funciona a Movimentação e a Mira em 1ª Pessoa
+
+Existem dois modos possíveis de implementar a câmera de 1ª pessoa num hook no final de `func_80034DBC` (ou em `func_80026760` / `func_800266D0`):
+
+1. **Modo 1 — Primeira Pessoa Completa (Full FPS):**
+   - **Posição da câmera (`Eye`):**
+     - `Eye = (player->0x0CD4, player->0x0CD8 + 6.0f, player->0x0CDC)` (posição real da cabeça calculada pelo esqueleto, mais um pequeno avanço frontal `forward * 12.0f` ou ocultação do próprio corpo no viewport ativo via `func_80057100`).
+   - **Direção da câmera (`LookAt`):**
+     - Quando **mirando/atirando** (`act == 3 || act == 4`):
+       - `yaw = F32(player + 0x64) + F32(player + 0x158)`
+       - `pitch = F32(player + 0x154)`
+       - O `Eye` pode ser deslocado levemente para o lado da arma (`right * 8.0f`, `up * 4.0f` em relação à mão `player + 0x1698`), dando visão "iron sights / over-the-gun" alinhada com o laser real da arma!
+     - Quando **andando / correndo / em cover**:
+       - `yaw = F32(player + 0x64)` (ou `cam_data + 0x10` sincronizado com `player + 0x64` para estilo FPS moderno onde girar a câmera gira o personagem);
+       - `LookAt = Eye + (sin(yaw)*cos(pitch), sin(pitch), cos(yaw)*cos(pitch)) * 400.0f`.
+   - **Controle estilo FPS (Strafe + Giro):**
+     - No WinBack original (3ª pessoa / tanque), o analógico esquerdo gira o personagem (`+0x64`) quando empurrado para os lados. Para um FPS puro, pode-se copiar o `yaw` da câmera (`cam_data + 0x10`, girado pelo analógico direito / C-Left / C-Right) diretamente para `F32(player + 0x64)`, ou manter a direção da câmera alinhada com `player + 0x64`.
+
+2. **Modo 2 — Híbrido (3ª Pessoa Andando/Cover + 1ª Pessoa ao Mirar com `R`):**
+   - Como *WinBack* é fortemente baseado em **cover nas paredes e cantos** (espiar pela esquina), um modo muito interessante (estilo *Metal Gear Solid 2* / *Resident Evil: Dead Aim*) é:
+     - Manter 3ª pessoa normal ao correr e se esconder na parede (ou permitir alternar 1ª/3ª pessoa com um botão/opção no menu do mod: `Camera: Third-person / First-person / First-person on aim`);
+     - Ao segurar **R** (entrar em estado de mira `act == 3` ou `4`), a câmera faz transição imediata para a visão em 1ª pessoa na altura dos olhos/arma (`player + 0x0CD4` / `player + 0x1698`), olhando exatamente na direção do laser (`yaw = +0x64 + +0x158`, `pitch = +0x154`).
+
+---
+
+### 6.5. Resumo dos Hooks Necessários caso queiramos implementar
+
+| Função na ROM | VRAM (`size`) | Hook proposto | O que fará |
+| :--- | :--- | :--- | :--- |
+| `func_80034DBC` | `0x80034DBC` (`0x3B8`) | `RECOMP_HOOK_RETURN` | No fim do update da câmera de cada jogador (`idx = 0` ou `1`), sobrescreve `Eye` (`0x8015D6D8`, `0x801B0CE8`, `0x80178FB0`) e `LookAt` (`0x80158748`, `0x8015D268`, `0x801C3808`) usando a cabeça `player + 0x0CD4..0x0CDC` e os ângulos `+0x64`, `+0x158` (yaw) e `+0x154` (pitch), além de atualizar `cam_data + 0x00..0x30` e a matriz `cam_data + 0x44`. |
+| `func_80057100` | `0x80057100` (`0xAB4`) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` | Quando o personagem sendo desenhado (`U32(obj + 0x2C)`) for o dono do viewport atual (`PLAYER_PTRS[U8(0x8016A40F)]`) e estiver em 1ª pessoa, liga temporariamente `player + 0xF4 |= 0x100` (oculta os 15 ossos do corpo para não tampar a câmera, mantendo a arma/mira laser na mão e mantendo o personagem visível na tela do outro jogador). |
+

@@ -36,6 +36,11 @@ typedef struct {
     int mag[5];
     int cap[5];
     int reserve[5];          // -1 infinite, -2 none
+    int can_give;            // WEAPON page: ammo sharing on (separate inventories)
+    int partner[5];          // partner's ammo for the slot, -1 = partner hasn't got the weapon
+    int give_amt[5];         // what R would give now (0 = can't)
+    int give_why[5];         // why not: 2 partner full, 3 partner has no gun, 4 nothing to give
+    int give_flash;          // 0..15: fades out after a successful R
     int map_img;
     unsigned int room_mask;
     float px[2], pz[2], yaw[2];
@@ -385,6 +390,67 @@ __attribute__((unused)) static void lm_spin(volatile unsigned short *t, int w, i
 
 static const int lm_cap_default[5] = { 8, 30, 8, 4, 7 };
 
+// Ammo sharing strip (WEAPON page, bottom): a teal cell like the weapon list, with
+//   [R] GIVE 30  >>>  [partner portrait] 12
+// The chevrons and the portrait frame take the partner's colour (P1 blue, P2 orange). When R can't
+// give, the reason replaces "GIVE n" and the chevrons go dark. After a successful R the cell lights
+// up and the partner's count turns green, fading out (give_flash).
+static void lm_share_strip(volatile unsigned short *t, const LiveMenuIn *in, int s) {
+    const int x0 = 92, y0 = 87, w = 212, h = 13;
+    int fl = in->give_flash;
+    lm_cell(t, x0, y0, w, h, fl > 0);
+    if (fl > 0) {                                   // fading light over the cell
+        for (int yy = 0; yy < h; yy++)
+            for (int xx = 0; xx < w; xx++) lm_blend(t, x0 + xx, y0 + yy, (LmCol){ 120, 255, 200 }, fl * 6);
+    }
+    lm_rect(t, x0, y0 + h, x0 + w - 1, y0 + h, (LmCol){ 6, 20, 24 });           // shadow line under it
+    int pm = (in->player ^ 1) & 1;                  // partner: 0 Jean-Luc (blue), 1 Engineer (orange)
+    LmCol acc = pm ? (LmCol){ 255, 140, 50 } : (LmCol){ 70, 165, 255 };
+    // [R] button, like the menu's grey buttons
+    lm_button(t, x0 + 4, y0 + 2, 13, 9, LM_R, 0);
+    int amt = in->give_amt[s];
+    int x = x0 + 22;
+    if (amt > 0) {
+        LmCol yl = { 236, 214, 110 };
+        x += lm_label(t, LM_GIVE, x, y0 + 3, yl, 1) + 4;
+        lm_num(t, amt, x, y0 + 2, yl);
+    } else {
+        static const int why_label[5] = { 0, 0, LM_MSG_FULL, LM_MSG_NOGUN, LM_MSG_EMPTY };
+        int wl = (in->give_why[s] >= 2 && in->give_why[s] <= 4) ? why_label[in->give_why[s]] : LM_MSG_EMPTY;
+        lm_label(t, wl, x, y0 + 3, (LmCol){ 240, 120, 100 }, 1);
+    }
+    // chevrons towards the partner
+    int px = x0 + 160;                              // portrait
+    for (int c = 0; c < 3; c++) {
+        int cx = px - 26 + c * 7;
+        int a = (amt > 0) ? 90 + c * 60 : 40;
+        LmCol cc = { (acc.r * a) >> 8, (acc.g * a) >> 8, (acc.b * a) >> 8 };
+        if (fl > 0 && amt >= 0) cc = (LmCol){ acc.r, acc.g, acc.b };
+        for (int k = 0; k < 4; k++) {
+            lm_put(t, cx + k, y0 + 2 + k, cc);
+            lm_put(t, cx + k + 1, y0 + 2 + k, cc);
+            lm_put(t, cx + k, y0 + 9 - k, cc);
+            lm_put(t, cx + k + 1, y0 + 9 - k, cc);
+        }
+    }
+    // partner portrait 12x12 (every 14/3 px of the 56x56 picture) in a frame of its colour
+    lm_rect(t, px - 1, y0, px + 12, y0 + h - 1, acc);
+    for (int yy = 0; yy < 11; yy++)
+        for (int xx = 0; xx < 12; xx++) {
+            unsigned short p = lm_portrait[pm][((yy * 14) / 3 + 2) * LM_PORT + (xx * 14) / 3 + 2];
+            LmCol pc = (p & 1) ? (LmCol){ ((p >> 11) & 31) << 3, ((p >> 6) & 31) << 3, ((p >> 1) & 31) << 3 }
+                               : (LmCol){ 10, 16, 26 };
+            lm_put(t, px + xx, y0 + 1 + yy, pc);
+        }
+    // partner's count
+    if (in->partner[s] >= 0) {
+        LmCol nc = (fl > 0) ? (LmCol){ 150, 240, 150 } : (LmCol){ 220, 228, 236 };
+        lm_num(t, in->partner[s], px + 17, y0 + 2, nc);
+    } else {
+        lm_rect(t, px + 17, y0 + 6, px + 23, y0 + 7, (LmCol){ 120, 130, 140 });     // "-": hasn't got the gun
+    }
+}
+
 static void lm_page_weapon(volatile unsigned short *t, const LiveMenuIn *in) {
     lm_red_frame(t, LM_TAB_WEAPON);
     LmCol yellow = { 236, 214, 110 };
@@ -420,17 +486,21 @@ static void lm_page_weapon(volatile unsigned short *t, const LiveMenuIn *in) {
     }
 #endif
     int nl = LM_BIG_HANDGUN + s;
-    lm_label2(t, nl, 200 - (lm_label_w[nl] >> 1), 66, (LmCol){ 255, 230, 150 }, (LmCol){ 200, 110, 20 }, 1);
+    int share = in->can_give && s > 0;                // the share strip takes the bottom row
+    int ty = share ? -5 : 0;
+    lm_label2(t, nl, 200 - (lm_label_w[nl] >> 1), 66 + ty, (LmCol){ 255, 230, 150 }, (LmCol){ 200, 110, 20 }, 1);
     LmCol teal = { 70, 160, 160 };
     int cap = in->cap[s] > 0 ? in->cap[s] : lm_cap_default[s];
-    int x = 160;
-    x += lm_label(t, LM_CAPACITY, x, 82, teal, 1) + 4;
-    lm_num(t, cap, x, 80, teal);
+    int x = 150;
+    x += lm_label(t, LM_CAPACITY, x, 82 + ty, teal, 1) + 4;
+    lm_num(t, cap, x, 80 + ty, teal);
     if (in->reserve[s] >= 0) {
-        x = 222;
-        x += lm_label(t, LM_RESERVE, x, 82, teal, 1) + 4;
-        lm_num(t, in->reserve[s], x, 80, teal);
+        x = 226;
+        x += lm_label(t, LM_RESERVE, x, 82 + ty, teal, 1) + 4;
+        lm_num(t, in->reserve[s], x, 80 + ty, teal);
     }
+    if (share) lm_share_strip(t, in, s);
+
 }
 
 static void lm_page_item(volatile unsigned short *t) {

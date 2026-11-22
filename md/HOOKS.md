@@ -28,6 +28,7 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 | `func_800C4FB0` | `0x800C4FB0` (`0x30C`) | `HOOK` / `HOOK_RETURN` | `coop_sky_draw_begin` / `coop_sky_draw_end` | (Testa `drawing_split`.) Recentraliza o domo no jogador do viewport e refaz a matriz (`func_80028740`); redireciona temporariamente `obj + 0x20`, `PLAYER_PTRS[0]` e `player + 0x8E` de acordo com o viewport atual (`0x8016A40F`), desenhando nuvens 2D e Sky Dome 3D apenas nos viewports que enxergam área externa. |
 | `func_800D1E24` | `0x800D1E24` (`0x2A8`) | `HOOK` / `HOOK_RETURN` | `coop_hud_update_begin` / `coop_hud_update_end` | Ativa `MODE = 2` durante o update da HUD para atualizar vida, arma, munição, reload e laser de P1 e P2. |
 | `func_800337A8` | `0x800337A8` (`0xB64`) | `HOOK` / `HOOK_RETURN` | `coop_enemy_begin` / `coop_enemy_end` | Troca ponteiros P1/P2 quando P2 está vivo e mais próximo (histerese `0.64`; com `enemy_ai` Smart/Elite usa memória de alvo e vingança) e mantém inimigos visíveis (`~0x100`) nas salas de ambos. Com Smart/Elite também ajusta visão/alcance, encurta pausas, faz olhares extras e o alerta ao esquadrão (`ai_after_update`, antes de desfazer a troca). |
+| `func_800AD9F0` | `0x800AD9F0` (`0x50`) | `HOOK` / `HOOK_RETURN` | `coop_boss_begin` / `coop_boss_end` | Update dos chefes (criados por `func_8002C86C` com `+0x92 == 2`; só roda a lógica `func_800ADCF8` com `D_801390C0[0]` vivo). Mesma troca de alvo P1/P2 e mesma regra de visibilidade dos inimigos comuns (`enemy_begin_common`/`enemy_end_common` com `boss = 1`), sem a IA Smart/Elite. |
 | `func_800CE718` | `0x800CE718` (`0x13C`) | `HOOK` / `HOOK_RETURN` | `coop_ai_look_begin` / `coop_ai_look_end` | Inimigo alertado pelo esquadrão ou atingido: abre o cone de visão `+0x1950` para π durante o teste (a linha de visão continua valendo) e restaura. |
 | `func_80031100` | `0x80031100` (`0x48`) | `PATCH` | `func_80031100` | Tamanho da rajada do inimigo: o mesmo cálculo do jogo + 1 (Smart) / + 2 (Elite) no co-op. |
 | `func_800B876C` | `0x800B876C` (`0x500`) | `HOOK` / `HOOK_RETURN` | `coop_bullet_begin` / `coop_bullet_end` | Atualização da arma do jogador: troca para o inventário do dono (P2) durante a chamada. O antigo truque de `MODE = 2` para fogo amigo foi desativado (não acertava o parceiro). |
@@ -374,6 +375,7 @@ Esta seção documenta o mapeamento completo de engenharia reversa da transiçã
 | `func_80090024` / `func_80090088` | `void (unsigned int cursor_ptr, int max)` | Move o cursor do menu para baixo/cima, com som. |
 | `func_8008E9BC` / `func_8008E9EC` | `void (void)` | Sons de confirmar/cancelar do menu. |
 | `func_8008EFFC` | `void func_8008EFFC(int state)` | Volta ao menu principal (estado 12) ao apertar B na tela 1P/2P. |
+| `func_80044928` | `int (unsigned int obj, unsigned int from, unsigned int to)` | Teste de linha livre do jogo (o mesmo dos inimigos): 0 livre, 1 parede, 2 objeto (objeto atingido em `D_8011D4D4`); `obj` é ignorado. `from`/`to` apontam para 3 floats. Usado na v0.2.4-0.2.6 para tirar o P2 de dentro de paredes no nascimento; removido na v0.2.7 (Passo 35), não é mais chamado. |
 | `func_800CE518` / `func_800CE718` / `func_800CE854` | `int (unsigned int e)` / `void (unsigned int e)` / `void (unsigned int e)` | Percepção do inimigo (distância, olhar + linha de visão, reação). Chamadas fora da vez do jogo para olhar mais vezes (`enemy_ai`). |
 
 ---
@@ -519,3 +521,29 @@ Lido do disassembly da ROM US (splat do WinBackRecomp), 2026-11-21. O que não f
 - Alerta ao esquadrão: na transição de `+0xFC & 0x80` de 0 para 1, os outros personagens em uso (`+0x92`), vivos, com objeto `+0x34 == 2`, na mesma sala (`+0x8E`), dentro do raio e sem `+0x1958 & 0x20` ganham 45 quadros de alerta. Enquanto isso o hook em `func_800CE718` usa cone π.
 - Vingança: `coop_damage_begin` → `ai_on_enemy_hit(alvo, atacante)`; o dono do tiro vem de `coop_bullet_begin` (`ai_bullet_owner`), ou do 3º argumento de `func_80057BB4` quando é 0 ou 1 (é o índice `+0x90` do atacante, `-1` = nenhum).
 - Estado por slot (`ai_obj` = objeto `+0x1740`; zera quando o slot é reaproveitado por outro inimigo).
+
+## Chefes: tiro no chefe (`src/boss_ai.h`)
+| Função | Tipo | Uso |
+|---|---|---|
+| `func_800AF368` (0x468) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` | Tratamento de acerto no chefe. Início: guarda vida, estado `+0x16EC`, animação `+0x16EE`, `+0x88`, `+0x1750`, `+0x154`, `+0x158` e levanta a vida em 10000. Retorno: escala a perda (`boss_toughness`), repete o bloco de morte se zerar, aplica a superarmadura. |
+| `func_8009C2E4`, `func_8004DE48` | chamadas | Usadas pelo bloco de morte repetido pelo mod. |
+| `func_8007CBEC` (0x164) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` | Desenha uma linha. Quando é a linha divisória do co-op (0, 0x77, 0x140), a barra do chefe é desenhada logo depois, por cima dela. |
+
+## Checkpoint e continue (inventário do P2)
+| Função | Tipo | Uso |
+|---|---|---|
+| `func_8009C8E0` (0xB8) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` | Checkpoint do jogo (início da fase e checkpoints). Copia o inventário do P2 junto; garante que o do P1 está nas variáveis do jogo durante a cópia. |
+| `func_8009C998` (0x140) | `RECOMP_HOOK_RETURN` | Continue: restaura o inventário do P2 do checkpoint e reinicia `pick_last`. |
+
+## Menu de título
+| Função | Tipo | Uso |
+|---|---|---|
+| `func_8008FF34` (0xF0) | `RECOMP_PATCH` | Desenha uma lista de itens do menu de título. Igual ao original; na tela 1P/2P do mod desenha 2 itens a partir de y 0xA5 (centralizado como LOAD GAME / NEW GAME). |
+
+## Fogo amigo (raio do tiro)
+| Função | Tipo | Uso |
+|---|---|---|
+| `func_8004221C` (0x5E0) | `RECOMP_HOOK` | Toda chamada de raio do jogo. Um raio que começa junto ao corpo de um jogador (até 100 na horizontal, 260 na vertical) e tem mais de 400 de comprimento é tratado como o tiro dele e testado contra o corpo do parceiro. |
+| `func_8004387C` (0x74) | `RECOMP_HOOK` | Distância entre dois pontos. Se a próxima chamada de raio usar o mesmo ponteiro de origem, o segundo ponto é a parede onde o tiro bate. |
+
+Histórico: v0.3.8 usou `func_800B8FB0` e v0.3.10 usou `func_800BABFC` (não pegavam o tiro do jogador); v0.3.12 removeu todos os ganchos de raio por suspeita de um travamento que depois se mostrou momentâneo; v0.3.13 voltou ao código da v0.3.11.

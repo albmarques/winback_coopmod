@@ -169,6 +169,18 @@ As funções abaixo foram adicionadas nesta fase do mod (menu 1P/2P, painel de m
     { name = "func_800CE854", vram = 0x800CE854, size = 0x2D4 },  # Percepção: reação (chamada)
 ```
 
+**Chefes (v0.2.8):**
+
+```toml
+    { name = "func_800AD9F0", vram = 0x800AD9F0, size = 0x50 },   # Update dos chefes (hook)
+```
+
+**Nascimento do P2 fora das paredes (v0.2.4 a v0.2.6; desde a v0.2.7 o mod não chama mais esta função, então ela não é necessária):**
+
+```toml
+    { name = "func_80044928", vram = 0x80044928, size = 0x470 },  # Teste de linha livre (paredes/objetos) (chamada)
+```
+
 Um `winback.us.syms.toml` gerado de novo pelo `tools/regen.sh` do WinBackRecomp já traz todas (e as da lista acima). Nele `func_800337A8` tem `0xB64` (a função termina em `0x8003430C`); listas antigas com `0xBC0` passavam do fim dela.
 
 ---
@@ -179,3 +191,6 @@ Um `winback.us.syms.toml` gerado de novo pelo `tools/regen.sh` do WinBackRecomp 
 - **`src/map_data.h` não vai para o repositório.** Gere a partir da sua ROM com `python tools/extract_maps.py <rom.z64>`.
 - **Arte gerada:** `src/weapon_icons.h` (`tools/gen_weapon_icons.py`) e `src/ammo_tex.h` (`tools/gen_ammo_tex.py`, usa a fonte Montserrat) já estão no repositório; só regenere se mudar a arte.
 - **Hooks que rodam durante o desenho em tela dividida** não podem usar `coop_active()`: `coop_draw_begin` põe `MODE = 2`, e `coop_active()` exige `MODE & 1`. Use `drawing_split` (foi isso que deixava o céu do P2 e o inventário do P2 no HUD errados).
+
+### Cuidado ao subir a versão
+No `mod.toml`, troque só a linha `version = "..."` (linha 5). `minimum_recomp_version` é a versão mínima do WinBack Recompiled (0.3.0) e não muda com a versão do mod. Na v0.3.1 uma troca de texto mudou as duas e o jogo recusou o mod ("Mod requires a newer version of this project").

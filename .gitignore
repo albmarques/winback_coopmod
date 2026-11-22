@@ -13,3 +13,12 @@ build/
 *.log
 .DS_Store
 Thumbs.db
+
+# Generated from your ROM (game data): do not publish
+src/map_data.h
+
+# Generated from your ROM (3D weapon meshes and textures): do not publish
+src/weapon_models.h
+
+# Generated from your own screen recording (game imagery): do not publish
+src/weapon_spin.h

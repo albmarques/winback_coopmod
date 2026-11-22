@@ -307,6 +307,50 @@ static void lm_equip(unsigned int p, int slot) {
     U16(p + 0x16E2) = anim;
 }
 
+// Ammo sharing from the WEAPON page (R): one magazine's worth of the selected weapon's ammo goes
+// to the partner. SMG / shotgun: reserve only (the partner must have the gun). Rockets / C4: the
+// count is the weapon, so the partner gets it with the first one; the giver keeps 1 while holding it.
+static const unsigned int give_addr[5] = { 0, 0x801587C0u, 0x801587C1u, 0x801587CBu, 0x801587C4u };
+static const int give_chunk[5] = { 0, 30, 8, 1, 1 };
+static const int give_cap[5] = { 0, 250, 250, 4, 7 };   // rockets / C4: what the infinite-ammo cheat fills
+static const int give_pick[5] = { -1, 0, 1, 2, 3 };     // index in pick_addr (coop_pickup_scale)
+static int pick_last[2][4];                             // defined with its initialiser further down
+static unsigned int lm_give_t[2] = { 0x80000000u, 0x80000000u };   // lm_tick of the last successful R
+
+static int lm_slot_owned(int k, int slot);
+static int lm_slot_held(unsigned int p);
+
+// How much R would give now (> 0), or why not: -2 partner full, -3 partner has no gun, -4 nothing.
+static int lm_give_amount(int k, unsigned int p, int s) {
+    if (s < 1 || s > 4) return -4;
+    int o = k ^ 1;
+    unsigned int a = give_addr[s];
+    if (s <= 2 && !lm_slot_owned(o, s)) return -3;
+    int keep = (s >= 3 && lm_slot_held(p) == s) ? 1 : 0;
+    int n = inv_get(k, a) - keep;
+    if (n <= 0) return -4;
+    int room = give_cap[s] - inv_get(o, a);
+    if (room <= 0) return -2;
+    if (n > give_chunk[s]) n = give_chunk[s];
+    if (n > room) n = room;
+    return n;
+}
+
+static int lm_give(int k, unsigned int p, int s) {
+    int n = lm_give_amount(k, p, s);
+    if (n <= 0) return 0;
+    int o = k ^ 1;
+    unsigned int a = give_addr[s];
+    int mine = inv_get(k, a), theirs = inv_get(o, a);
+    inv_set(k, a, mine - n);
+    inv_set(o, a, theirs + n);
+    int pi = give_pick[s];
+    pick_last[k][pi] = mine - n;          // not a pickup: keep the difficulty scaling out of it
+    pick_last[o][pi] = theirs + n;
+    if (recomp_get_config_u32("log") != 0) winback_mod_log(k ? "coop: P2 gave ammo to P1" : "coop: P1 gave ammo to P2");
+    return 1;
+}
+
 static void lm_close_all(void) {
     lm_open[0] = lm_open[1] = 0;
 }
@@ -344,6 +388,13 @@ static void lm_player_begin(unsigned int p, int k) {
             if (t < 0) t = 3;
             if (t > 3) t = 0;
             lm_tab[k] = t;
+        }
+    }
+    if ((b & 0x0010) && scr == 1 && inv_separate() && inv_p2_valid) {   // R: give ammo to the partner
+        if (lm_give(k, p, lm_cursor[k])) lm_give_t[k] = lm_tick;
+        if (!lm_slot_owned(k, lm_cursor[k])) {   // gave the last rocket / C4 away
+            int h = lm_slot_held(p);
+            lm_cursor[k] = (h >= 0) ? h : 0;
         }
     }
     if (b & 0x8000) {                            // A
@@ -433,15 +484,63 @@ RECOMP_HOOK_RETURN("func_80059E5C") void coop_inv_player_end(void) {
     inv_pu_entered = 0;
 }
 
+// Checkpoints. func_8009C8E0 copies the mission flags and the progress block (P1's inventory
+// included) to D_8011DAB0 / D_8011E350, at stage start (func_8004BD7C) and at mid-stage
+// checkpoints (func_8009AA9C); the continue screen (func_800904E4) puts them back with
+// func_8009C998. P2's inventory lives in the mod, so it is copied alongside: after a continue both
+// players are back to what they had at the checkpoint.
+static unsigned char inv_cp[INV_N];
+static int inv_cp_valid;
+static int inv_cp_swapped;
+
+RECOMP_HOOK("func_8009C8E0") void coop_checkpoint_save_begin(void) {
+    // If P2's inventory is in the globals right now, put P1's back first so the game's own
+    // checkpoint keeps P1's (and P2's copy below is the right one).
+    inv_cp_swapped = 0;
+    if (inv_active != 0) {
+        inv_exchange();
+        inv_cp_swapped = 1;
+    }
+    inv_cp_valid = inv_p2_valid;
+    if (inv_p2_valid) for (int i = 0; i < INV_N; i++) inv_cp[i] = inv_p2[i];
+}
+
+RECOMP_HOOK_RETURN("func_8009C8E0") void coop_checkpoint_save_end(void) {
+    if (inv_cp_swapped) {
+        inv_exchange();
+        inv_cp_swapped = 0;
+    }
+    if (recomp_get_config_u32("log") != 0)
+        winback_mod_log(inv_cp_valid ? "coop: checkpoint saved (P2 inventory kept)" : "coop: checkpoint saved (no P2 inventory yet)");
+}
+
+RECOMP_HOOK_RETURN("func_8009C998") void coop_checkpoint_restore_end(void) {
+    // The game just wrote P1's checkpoint inventory into the globals: they are P1's again.
+    inv_active = 0;
+    inv_depth = 0;
+    if (inv_cp_valid) {
+        for (int i = 0; i < INV_N; i++) inv_p2[i] = inv_cp[i];
+        inv_p2_valid = 1;
+    } else {
+        inv_p2_valid = 0;   // no copy yet: P2 gets P1's again at the stage start, as on a new session
+    }
+    for (int k = 0; k < 2; k++)
+        for (int i = 0; i < 4; i++) pick_last[k][i] = -1;   // not a pickup: the difficulty scaling restarts
+    if (recomp_get_config_u32("log") != 0)
+        winback_mod_log(inv_cp_valid ? "coop: continue, P2 inventory restored" : "coop: continue, P2 inventory recopied from P1");
+}
+
 // New game (func_8004DA40 resets the story state): P2's copy is rebuilt at the first stage.
 RECOMP_HOOK_RETURN("func_8004DA40") void coop_inv_new_game(void) {
     inv_p2_valid = 0;
     inv_active = 0;
     inv_depth = 0;
+    inv_cp_valid = 0;
 }
 
 static int spawn_guard;           // frames after a stage load in which P2 is pushed off P1
 static float spawn_side_x = 1.0f, spawn_side_z = 0.0f; // unit vector from P1 to P2 at the start
+static float spawn_guard_dist = -1.0f; // distance the overlap guard restores (-1: "spawn_distance")
 
 static float spawn_sqrt(float v) {
     if (v <= 0.0f) return 0.0f;
@@ -453,6 +552,7 @@ static float spawn_sqrt(float v) {
 RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
     radar_map_reset = 1;
     spawn_guard = 90;
+    spawn_guard_dist = -1.0f;
     lm_close_all();
     if (U8(MODE) & 1) {
         U8(PLAYERS) = 1;
@@ -506,6 +606,29 @@ static const unsigned char glyph_one[12][20] = {
     {0,0,2,3,3,3,3,3,3,3,3,13},
     {0},{0},
 };
+
+// Title menu list (func_8008FF34(dl, sprites, count, cursor, y, step)): the chosen item opaque, the
+// others at alpha 0x55, each centred horizontally, one under the other. Same code, except for the
+// mod's 1P/2P screen: it reuses the Versus 2/3/4 PLAYER list (3 items from y 0x9E), so only the two
+// real items are drawn, from y 0xA5 like LOAD GAME / NEW GAME, which centres them in the same space.
+extern void func_8007CFE4(unsigned int sprite, int selected);
+extern void func_8007BAAC(unsigned int sprite, int r, int g, int b, int a);
+extern void func_8007B8F4(unsigned int dl_ptr_ptr, unsigned int sprite_ptr, int x, int y);
+
+RECOMP_PATCH void func_8008FF34(unsigned int dlpp, unsigned int table, int count, int cursor, int y, int step) {
+    if (story_menu && table == TITLE_VS_TBL && U32(TITLE_VS_TBL + 8) == MENU_SPR_NONE) {
+        count = 2;
+        y = 0xA5;
+    }
+    for (int i = 0; i < count; i++) {
+        unsigned int spr = U32(table + (unsigned int)i * 4u);
+        func_8007CFE4(spr, i == cursor);
+        func_8007BAAC(spr, 0xFF, 0xFF, 0xFF, (i == cursor) ? 0xFF : 0x55);
+        int d = 0x140 - (int)U16(spr + 2);
+        func_8007B8F4(dlpp, spr, d / 2, y);
+        y += step;
+    }
+}
 
 static void story_menu_open(void) {
     unsigned int i;
@@ -789,6 +912,141 @@ static unsigned int ff_mag_addr(unsigned int p, int id) {
     return 0;
 }
 
+// Friendly fire on the game's own shot ray (see ff_scan_ray_begin): the partner is hit only if
+// the ray passes through its body (radius FF_RADIUS around the centre line, FF_HALF_H up and down
+// from the chest) before the wall. A shot (magazine drop, coop_friendly_fire) and a ray that hits
+// the partner are paired when they are at most 3 frames apart.
+static int ai_bullet_owner;   // defined with its initialiser in enemy_ai.h
+#define FF_RADIUS   26.0f
+#define FF_CHEST    80.0f      // centre of the body above the position (feet)
+#define FF_HALF_H   95.0f
+static int ff_pending[2], ff_pending_id[2];
+static unsigned int ff_pending_tick[2];
+static unsigned int ff_scan_hit_tick[2] = { 0x80000000u, 0x80000000u };
+static float ff_scan_hit_t[2];
+static int ff_scan_wall;
+static float ff_o[3], ff_e[3], ff_w[3];
+static unsigned int ff_last_dist_a;      // first pointer of the last func_8004387C call in the shot
+static unsigned int ff_scan_seen_tick[2] = { 0x80000000u, 0x80000000u };   // last ray of each player (diagnosis)
+
+static void ff_apply(int k, int id, float dist, int shots) {
+    unsigned int q = k ? SLOT0_DATA : SLOT1_DATA;
+    if (S8(q + 0x176B) <= 0) return;
+    int dmg = (id == 2) ? (dist < 600.0f ? 20 : 8) : (id == 1 ? 5 : 8);
+    dmg *= shots;
+    // Apply the hit directly (the game's damage routine can refuse player targets):
+    // lower the life and trigger the same hit reaction it sets (+0x88, +0x174D).
+    int hp = S8(q + 0x176B) - dmg;
+    if (hp < 0) hp = 0;
+    S8(q + 0x176B) = (signed char)hp;
+    U16(q + 0x88) = 0x4000;
+    U8(q + 0x174D) = 0x1E;
+    if (recomp_get_config_u32("log") != 0) winback_mod_log(k ? "coop: ff P2 hit P1" : "coop: ff P1 hit P2");
+}
+
+static void ff_try_resolve(int k) {
+    if (ff_pending[k] <= 0) return;
+    if ((unsigned int)(lm_tick - ff_scan_hit_tick[k]) > 3u) return;
+    ff_apply(k, ff_pending_id[k], ff_scan_hit_t[k], ff_pending[k]);
+    ff_pending[k] = 0;
+    ff_scan_hit_tick[k] = lm_tick - 0x40000000u;     // used up
+}
+
+// Every ray of the game goes through func_8004221C(origin, end, ...): bullets, line of sight,
+// the march of the shot code. The players' shot rays are recognised by where they start: at the
+// shooter's body (within FF_ORIGIN_R horizontally, FF_ORIGIN_H vertically) and long
+// (> FF_MIN_LEN). The wall, when there is one, is the func_8004387C call measured from the same
+// origin variable just before (see ff_scan_wall_begin).
+#define FF_ORIGIN_R 100.0f
+#define FF_ORIGIN_H 260.0f
+#define FF_MIN_LEN  400.0f
+static float ff_near_d[2] = { 99999.0f, 99999.0f };   // diagnosis: closest ray origin since the last shot
+static int ff_rays_seen;
+
+static void ff_check_ray(int k) {
+    unsigned int p = k ? SLOT1_DATA : SLOT0_DATA;
+    unsigned int q = k ? SLOT0_DATA : SLOT1_DATA;
+    int lg = recomp_get_config_u32("log") != 0;
+    if (recomp_get_config_u32("friendly_fire") != 0) return;
+    if (S8(p + 0x176B) <= 0 || S8(q + 0x176B) <= 0) return;
+    if (U16(p + 0x8E) != U16(q + 0x8E)) return;
+    float dx = ff_e[0] - ff_o[0], dy = ff_e[1] - ff_o[1], dz = ff_e[2] - ff_o[2];
+    float len = spawn_sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1.0f) return;
+    dx /= len; dy /= len; dz /= len;
+    float stop = len;                                    // where the bullet ends: range or wall
+    if (ff_scan_wall) {
+        float wx = ff_w[0] - ff_o[0], wy = ff_w[1] - ff_o[1], wz = ff_w[2] - ff_o[2];
+        stop = spawn_sqrt(wx * wx + wy * wy + wz * wz);
+    }
+    float vx = F32(q + 0) - ff_o[0], vy = F32(q + 4) + FF_CHEST - ff_o[1], vz = F32(q + 8) - ff_o[2];
+    float t = vx * dx + vy * dy + vz * dz;              // distance along the ray to the partner
+    float sx = vx - dx * t, sz = vz - dz * t;            // horizontal miss distance
+    float side = spawn_sqrt(sx * sx + sz * sz);
+    float up = vy - dy * t;
+    if (up < 0.0f) up = -up;
+    int hit = (t > 10.0f && t < stop - 8.0f && side < FF_RADIUS && up < FF_HALF_H);
+    if (hit || (lg && ff_pending[k] > 0)) {
+        if (lg) {
+            union { float f; unsigned int u; } a, b, c, d;
+            a.f = t; b.f = stop; c.f = side; d.f = up;
+            static const char tmpl[] = "coop: ff ray ... t 0x........ wall 0x........ side 0x........ up 0x........";
+            static char line[sizeof(tmpl)];
+            for (unsigned int n = 0; n < sizeof(tmpl); n++) line[n] = tmpl[n];
+            line[13] = hit ? 'H' : 'm'; line[14] = hit ? 'I' : 'i'; line[15] = hit ? 'T' : 's';
+            put_hex(line + 21, a.u, 8);
+            put_hex(line + 37, b.u, 8);
+            put_hex(line + 53, c.u, 8);
+            put_hex(line + 67, d.u, 8);
+            if (!ff_scan_wall) {
+                static const char none[10] = { 'n', 'o', 'n', 'e', ' ', ' ', ' ', ' ', ' ', ' ' };
+                for (int n = 0; n < 10; n++) line[35 + n] = none[n];
+            }
+            winback_mod_log(line);
+        }
+    }
+    if (!hit) return;
+    ff_scan_hit_tick[k] = lm_tick;
+    ff_scan_hit_t[k] = t;
+    ff_try_resolve(k);
+}
+
+RECOMP_HOOK("func_8004221C") void ff_scan_ray_begin(unsigned int o, unsigned int e) {
+    if (U8(PLAYERS) != 2) return;
+    if (o < 0x80000000u || o >= 0x80800000u || e < 0x80000000u || e >= 0x80800000u) return;
+    float ox = F32(o), oy = F32(o + 4), oz = F32(o + 8);
+    float ex = F32(e), ey = F32(e + 4), ez = F32(e + 8);
+    ff_rays_seen++;
+    int best = -1;
+    float bestd = FF_ORIGIN_R;
+    for (int k = 0; k < 2; k++) {
+        unsigned int p = k ? SLOT1_DATA : SLOT0_DATA;
+        float hx = ox - F32(p + 0), hz = oz - F32(p + 8), hy = oy - F32(p + 4);
+        float d = spawn_sqrt(hx * hx + hz * hz);
+        if (hy < 0.0f) hy = -hy;
+        if (hy > FF_ORIGIN_H) continue;
+        if (d < ff_near_d[k]) ff_near_d[k] = d;
+        if (d < bestd) { bestd = d; best = k; }
+    }
+    int was_wall = (ff_last_dist_a == o);
+    ff_last_dist_a = 0;
+    if (best < 0) return;
+    float lx = ex - ox, ly = ey - oy, lz = ez - oz;
+    if (lx * lx + ly * ly + lz * lz < FF_MIN_LEN * FF_MIN_LEN) return;
+    ff_o[0] = ox; ff_o[1] = oy; ff_o[2] = oz;
+    ff_e[0] = ex; ff_e[1] = ey; ff_e[2] = ez;
+    ff_scan_wall = was_wall;
+    ff_scan_seen_tick[best] = lm_tick;
+    ff_check_ray(best);
+}
+
+RECOMP_HOOK("func_8004387C") void ff_scan_wall_begin(unsigned int o, unsigned int w) {
+    if (U8(PLAYERS) != 2) return;
+    if (w < 0x80000000u || w >= 0x80800000u) return;
+    ff_last_dist_a = o;                                 // kept if the next ray starts from it
+    for (int i = 0; i < 3; i++) ff_w[i] = F32(w + (unsigned int)i * 4u);
+}
+
 static void coop_friendly_fire(void) {
     for (int i = 0; i < 2; i++) {
         unsigned int p = U32(PLAYER_PTRS + i * 4);
@@ -804,75 +1062,37 @@ static void coop_friendly_fire(void) {
         if (shots <= 0 || shots > 3 || recomp_get_config_u32("friendly_fire") != 0) continue;
         if (recomp_get_config_u32("log") != 0) {
             winback_mod_log(k ? "coop: shot by P2" : "coop: shot by P1");
+            if ((unsigned int)(lm_tick - ff_scan_seen_tick[k]) > 3u) {
+                // diagnosis: how far from the shooter the closest ray started, and how many rays
+                union { float f; unsigned int u; } nd;
+                nd.f = ff_near_d[k];
+                static const char tmpl[] = "coop: ff no ray at the shooter; closest origin 0x........ rays 0x........";
+                static char line[sizeof(tmpl)];
+                for (unsigned int n = 0; n < sizeof(tmpl); n++) line[n] = tmpl[n];
+                put_hex(line + 49, nd.u, 8);
+                put_hex(line + 65, (unsigned int)ff_rays_seen, 8);
+                winback_mod_log(line);
+            }
+            ff_near_d[k] = 99999.0f;
+            ff_rays_seen = 0;
         }
         if (S8(p + 0x176B) <= 0 || S8(q + 0x176B) <= 0) continue;
         if (U16(p + 0x8E) != U16(q + 0x8E)) continue;
-        // 1) Camera ray: when aiming, the view looks over the shoulder along the line of fire,
-        //    so the partner is hit when close to the ray eye -> look-at of the shooter's view.
-        float ex = F32(0x8015D6D8 + i * 4), ez = F32(0x80178FB0 + i * 4);
-        float cx = F32(0x80158748 + i * 4) - ex, cz = F32(0x801C3808 + i * 4) - ez;
-        float cl = spawn_sqrt(cx * cx + cz * cz);
-        float dy = F32(q + 4) - F32(p + 4);
-        if (dy < 0.0f) dy = -dy;
-        float cside = 99999.0f, calong = 0.0f;
-        if (cl > 1.0f) {
-            cx /= cl;
-            cz /= cl;
-            float qx = F32(q + 0) - ex, qz = F32(q + 8) - ez;
-            float px = F32(p + 0) - ex, pz = F32(p + 8) - ez;
-            calong = qx * cx + qz * cz;
-            float palong = px * cx + pz * cz;          // the shooter's own distance along the ray
-            cside = qx * cz - qz * cx;
-            if (cside < 0.0f) cside = -cside;
-            if (calong < palong + 5.0f) cside = 99999.0f;   // partner behind the shooter
-            calong -= palong;
-        }
-        // 2) Body yaw (player + 0x64, x = sin, z = cos): only trusted at point-blank range.
-        // Aim yaw = body yaw (+0x64) + free-aim offset (+0x158), as the game's shot code adds them
-        // (func_800B8FB0 at 0x800B96E4). The body yaw alone stays where aiming started.
-        float yaw = F32(p + 0x64) + F32(p + 0x158);
-        float fx = ff_sin(yaw);
-        float fz = ff_sin(yaw + 1.5707963f);
-        float dx = F32(q + 0) - F32(p + 0);
-        float dz = F32(q + 8) - F32(p + 8);
-        float along = dx * fx + dz * fz;
-        float side = dx * fz - dz * fx;
-        if (side < 0.0f) side = -side;
-        // The camera turned out not to follow the line of fire; the body yaw does, give or
-        // take a body width: logs showed a dead-on aim within 1 degree, so the cone is narrow.
-        int hit = (dy < 150.0f && along > 5.0f && along < 2500.0f && side < 35.0f + along * 0.03f);
-        (void)cside; (void)calong;
-        if (recomp_get_config_u32("log") != 0) {
-            union { float f; unsigned int u; } a, b2, c, e, g;
-            a.f = yaw; b2.f = dx; c.f = dz; e.f = along; g.f = side;
-            static const char tmpl[] = "coop: ff ... yaw 0x........ dx 0x........ dz 0x........ along 0x........ side 0x........";
-            static char line[sizeof(tmpl)];
-            for (unsigned int n = 0; n < sizeof(tmpl); n++) line[n] = tmpl[n];
-            line[9] = hit ? 'H' : 'm'; line[10] = hit ? 'I' : 'i'; line[11] = hit ? 'T' : 's';
-            put_hex(line + 19, a.u, 8);
-            put_hex(line + 33, b2.u, 8);
-            put_hex(line + 47, c.u, 8);
-            put_hex(line + 64, e.u, 8);
-            put_hex(line + 80, g.u, 8);
-            winback_mod_log(line);
-        }
-        if (!hit) continue;
-        int dmg = (id == 2) ? (along < 600.0f ? 20 : 8) : (id == 1 ? 5 : 8);
-        dmg *= shots;
-        // Apply the hit directly (the game's damage routine can refuse player targets):
-        // lower the life and trigger the same hit reaction it sets (+0x88, +0x174D).
-        int hp = S8(q + 0x176B) - dmg;
-        if (hp < 0) hp = 0;
-        S8(q + 0x176B) = (signed char)hp;
-        U16(q + 0x88) = 0x4000;
-        U8(q + 0x174D) = 0x1E;
+        // The hit itself is decided on the game's own shot ray (ff_scan_ray_begin): a shot is
+        // pending for a few frames until that ray is seen.
+        ff_pending[k] = shots;
+        ff_pending_id[k] = id;
+        ff_pending_tick[k] = lm_tick;
+        ff_try_resolve(k);
     }
+    for (int k = 0; k < 2; k++)
+        if (ff_pending[k] > 0 && (unsigned int)(lm_tick - ff_pending_tick[k]) > 3u) ff_pending[k] = 0;
 }
 
 // Hard / Brutal: pickups give less ammo. Reserve counters are compared frame to frame and
 // any increase (a pickup) is scaled down.
 static const unsigned int pick_addr[4] = { 0x801587C0u, 0x801587C1u, 0x801587CBu, 0x801587C4u };
-static int pick_last[2][4] = { { -1, -1, -1, -1 }, { -1, -1, -1, -1 } };
+static int pick_last[2][4] = { { -1, -1, -1, -1 }, { -1, -1, -1, -1 } };   // declared above (lm_give)
 static int pick_rem[2][4];
 
 static void coop_pickup_scale(int settle) {
@@ -908,7 +1128,7 @@ RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
             unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
             float dx = F32(b + 0) - F32(a + 0);
             float dz = F32(b + 8) - F32(a + 8);
-            float off = (float)recomp_get_config_double("spawn_distance");
+            float off = (spawn_guard_dist >= 0.0f) ? spawn_guard_dist : (float)recomp_get_config_double("spawn_distance");
             if (off > 0.0f && dx * dx + dz * dz < (off * 0.5f) * (off * 0.5f) &&
                 U16(a + 0x8E) == U16(b + 0x8E)) {
                 F32(b + 0) = F32(a + 0) + spawn_side_x * off;
@@ -1142,7 +1362,21 @@ RECOMP_HOOK_RETURN("func_800593EC") void coop_p2_model(void) {
 // 6. Enemies target nearer living player and stay visible in either player's room.
 #include "enemy_ai.h"
 
+// Bosses use their own update, func_800AD9F0 (set by func_8002C86C for characters with +0x92 == 2):
+// it runs the boss logic (func_800ADCF8) only while D_801390C0[0] (player 1) is alive. The same
+// target swap and visibility rule as regular enemies are applied to it (boss = 1), without the
+// smarter-enemy AI, whose state numbers don't apply to bosses.
+static void enemy_begin_common(unsigned int obj, int boss);
+
 RECOMP_HOOK("func_800337A8") void coop_enemy_begin(unsigned int obj) {
+    enemy_begin_common(obj, 0);
+}
+
+RECOMP_HOOK("func_800AD9F0") void coop_boss_begin(unsigned int obj) {
+    enemy_begin_common(obj, 1);
+}
+
+static void enemy_begin_common(unsigned int obj, int boss) {
     swapped_players = 0;
     cur_enemy = 0;
     ai_cur_idx = -1;
@@ -1157,8 +1391,8 @@ RECOMP_HOOK("func_800337A8") void coop_enemy_begin(unsigned int obj) {
         return;
     }
     // Smarter enemies (enemy_ai.h): slot state, senses, and whether the game looks this frame.
-    int ai_lv = ai_level();
-    ai_tune_senses(e, ai_lv);          // also puts Original values back after switching the option
+    int ai_lv = boss ? 0 : ai_level();
+    if (!boss) ai_tune_senses(e, ai_lv);   // also puts Original values back after switching the option
     if (ai_lv != 0) {
         ai_cur_idx = ai_slot_index(e);
         if (ai_cur_idx >= 0) {
@@ -1219,7 +1453,17 @@ RECOMP_HOOK("func_800337A8") void coop_enemy_begin(unsigned int obj) {
     swapped_players = 1;
 }
 
+static void enemy_end_common(void);
+
 RECOMP_HOOK_RETURN("func_800337A8") void coop_enemy_end(void) {
+    enemy_end_common();
+}
+
+RECOMP_HOOK_RETURN("func_800AD9F0") void coop_boss_end(void) {
+    enemy_end_common();
+}
+
+static void enemy_end_common(void) {
     // Smarter enemies: extra looks, quicker reactions, squad alert. Runs before the swap back,
     // while D_801390C0[0] is still the player this enemy fights.
     if (cur_enemy != 0 && ai_cur_idx >= 0) {
@@ -1709,6 +1953,19 @@ RECOMP_HOOK("func_800944E0") void coop_event_mgr_begin(void) {
             ensure_normal_player_order();
         }
         in_cutscene = 1;
+    } else if (!in_cutscene && S16(0x8010E0F8) == 1) {
+        // Event 15 (0x8010E0F8 == 1) is queued by Action 23 (ladder) and Action 9 (vault)
+        // when the entry animation reaches frame 18.0f. Neither action pushes to func_8004DE48,
+        // so detect which player is currently on the ladder/vault before func_8009C2E4(15, 0) runs.
+        unsigned short act0 = U16(SLOT0_DATA + 0x16EC);
+        unsigned short act1 = U16(SLOT1_DATA + 0x16EC);
+        if (act1 == 23 || act1 == 9) {
+            trigger_player = 1;
+            trigger_ttl = 180;
+        } else if (act0 == 23 || act0 == 9) {
+            trigger_player = 0;
+            trigger_ttl = 0;
+        }
     }
     unsigned int p1 = U32(PLAYER_PTRS);
     unsigned int p2 = U32(PLAYER_PTRS + 4);
@@ -1741,6 +1998,15 @@ RECOMP_HOOK("func_8009C2E4") void coop_event_dispatch_begin(int type, int val) {
     c2e4_swapped = 0;
     if (!coop_story_session() || in_cutscene) {
         return;
+    }
+    unsigned short act0 = U16(SLOT0_DATA + 0x16EC);
+    unsigned short act1 = U16(SLOT1_DATA + 0x16EC);
+    if (act1 == 23 || act1 == 25 || act1 == 12 || act1 == 13 || act1 == 9) {
+        trigger_player = 1;
+        trigger_ttl = 180;
+    } else if (act0 == 23 || act0 == 25 || act0 == 12 || act0 == 13 || act0 == 9) {
+        trigger_player = 0;
+        trigger_ttl = 0;
     }
     set_protagonist(trigger_player);
     if (trigger_player == 1 && U32(PLAYER_PTRS) == SLOT0_DATA) {
@@ -2473,6 +2739,21 @@ static void live_menu_draw(int char_idx, int x, int y) {
         in.cap[i] = (i == 0) ? (inv_get(k, 0x801587CC) ? 14 : 8) : 0;
         key = key * 31u + (unsigned int)(in.owned[i] * 977 + in.mag[i] * 13 + in.reserve[i] + 5);
     }
+    // ammo sharing: the partner's ammo and the message of the last R (2 s)
+    in.can_give = inv_separate() && inv_p2_valid;
+    {
+        unsigned int dt = lm_tick - lm_give_t[k];   // light fades over 30 frames (one step every 2)
+        in.give_flash = (dt < 30u) ? 15 - (int)(dt >> 1) : 0;
+    }
+    for (int i = 0; i < 5; i++) {
+        in.partner[i] = -1;                                          // handgun / partner hasn't got the gun
+        if (i >= 3 || (i > 0 && lm_slot_owned(k ^ 1, i))) in.partner[i] = inv_get(k ^ 1, give_addr[i]);
+        int g = lm_give_amount(k, p, i);
+        in.give_amt[i] = g > 0 ? g : 0;
+        in.give_why[i] = g > 0 ? 0 : -g;
+        key = key * 31u + (unsigned int)(in.partner[i] * 7 + in.give_amt[i] * 3 + in.give_why[i] + 7);
+    }
+    key = key * 31u + (unsigned int)(in.can_give * 101 + in.give_flash);
     // map: the level image and the rooms discovered (as the game's map screen), plus both players
     in.map_img = -1;
     in.room_mask = 0;
@@ -2576,6 +2857,9 @@ static void hud_anchor(int a) {
     hud_emit(packed, packed);
 }
 
+#include "boss_bar.h"
+#include "boss_ai.h"
+
 RECOMP_PATCH void func_800CF6A8(int player_idx, int x, int y) {
     hud_ws_active = (U8(PLAYERS) == 2) && hud_ws_detect();
     if (player_idx < 0 || player_idx > 3) {
@@ -2595,11 +2879,27 @@ RECOMP_PATCH void func_800CF6A8(int player_idx, int x, int y) {
     if (hp < 0) hp = 0;
     if (hp > 100) hp = 100;
 
-    int del10 = S16(0x801B1168 + player_idx * 2);
+    int hp10 = hp * 10;
+    int del10;
+    if (char_idx == 0) {
+        del10 = S16(0x801B1168 + player_idx * 2);
+    } else {
+        // Row 1 of the shown-health table is the boss bar's in Story (func_800D24D4 writes the boss's
+        // health x 10 there), so P2's trail is eased here instead: drops an eighth of the gap per frame
+        // (at least 4), follows healing at once.
+        static int p2_shown10 = -1;
+        if (p2_shown10 < 0 || p2_shown10 < hp10) {
+            p2_shown10 = hp10;
+        } else if (p2_shown10 > hp10) {
+            int step = (p2_shown10 - hp10) >> 3;
+            p2_shown10 -= (step < 4) ? 4 : step;
+            if (p2_shown10 < hp10) p2_shown10 = hp10;
+        }
+        del10 = p2_shown10;
+    }
     if (del10 < 0) del10 = 0;
     if (del10 > 1000) del10 = 1000;
 
-    int hp10 = hp * 10;
     int bar_hp10 = (del10 < hp10) ? del10 : hp10;
     int trail_hp10 = (del10 > hp10) ? del10 : hp10;
 
