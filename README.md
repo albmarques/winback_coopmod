@@ -88,6 +88,7 @@ Defined in [`mod.toml`](mod.toml) and configurable from the in-game **Mods** men
 | `enemy_ai` | Enemy AI | `Original`, `Smart`, `Elite` | `Smart` | Co-op enemy senses, reactions, bursts, squad alert, target memory and revenge. |
 | `ladder_fade` | Ladder fade | `Climber only`, `Full screen` | `Climber only` | Co-op: the black fade of ladders/vaults only covers the view of the player using them. |
 | `shot_rooms` | Shots across rooms | `On`, `Off` | `On` | Co-op: P2's shots and enemy shots at P2 also hit when P1 is in another room. |
+| `traps` | Traps for P2 | `On`, `Off` | `On` | Co-op: laser traps (stage 3) also switch on near P2 and are set off by P2 crossing the beam. |
 | `door_fix` | Door map change fix | `On`, `Off` | `On` | Co-op (spawn distance 0): P2 starts a little ahead of P1 at each stage/door map load, so the bodies don't push P2 back through the door (stage 2 double door). |
 | `boss_toughness` | Boss toughness | `Original`, `Tough`, `Brutal` | `Tough` | Co-op: bosses take 55% / 40% damage and ignore new staggers for ~1.5 s / ~3 s after one (no stun-lock). |
 | `boss_bar` | Boss health bar | `On`, `Off` | `On` | Co-op: BOSS health bar centred under the split line during boss fights. |

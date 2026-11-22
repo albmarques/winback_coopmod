@@ -1470,6 +1470,65 @@ RECOMP_HOOK_RETURN("func_8004394C") void coop_hit_room_end(void) {
     U32(ROOM_STATE + 4) = t;
 }
 
+// Passo 50: the stage 3 laser trap (object family set up by func_800D49A0) only works in
+// P1's room. Its update (func_800D5094 for the emitter) and its draws (func_800D500C, and
+// func_800D5884 for the beam, which also tests the beam against D_801390C0 = P1) all compare
+// the object's room (+0x8E) with P1's room/sub-room (D_8016A410/12). So it only switched on
+// when P1 came near, and P2 could cross the beam. Now:
+//  - update: if the object is in P2's room and not in P1's (or in both and P2 is nearer),
+//    ROOM_STATE and PLAYER_PTRS[0]/[1] are swapped for the call (P2 switches it on);
+//  - draws: while drawing P2's half of the split screen, the same swap, so P2 sees the beam
+//    and the beam is tested against P2 (crossing it sets off the trap like for P1).
+static unsigned char trap_swap[4];
+static int trap_depth;
+static int trap_room_is_p2_only(unsigned int obj) {
+    if (obj < 0x80000000u || obj >= 0x80800000u) return 0;
+    unsigned int d = U32(obj + 0x2C);
+    if (d < 0x80000000u || d >= 0x80800000u) return 0;
+    short r = S16(d + 0x8E);
+    short a0 = S16(ROOM_STATE + 0), a1 = S16(ROOM_STATE + 2);
+    short b0 = S16(ROOM_STATE + 4), b1 = S16(ROOM_STATE + 6);
+    if (r != b0 && r != b1) return 0;                 // not in P2's room
+    if (r != a0 && r != a1) return 1;                 // only in P2's room
+    // In both players' rooms: the trap measures its distance to D_801390C0, so use P2 when
+    // P2 is the nearer one.
+    float x0 = F32(d + 0) - F32(SLOT0_DATA + 0), z0 = F32(d + 8) - F32(SLOT0_DATA + 8);
+    float x1 = F32(d + 0) - F32(SLOT1_DATA + 0), z1 = F32(d + 8) - F32(SLOT1_DATA + 8);
+    return (x1 * x1 + z1 * z1) < (x0 * x0 + z0 * z0);
+}
+static void trap_swap_players(void) {
+    unsigned int t = U32(ROOM_STATE);
+    U32(ROOM_STATE) = U32(ROOM_STATE + 4);
+    U32(ROOM_STATE + 4) = t;
+    t = U32(PLAYER_PTRS);
+    U32(PLAYER_PTRS) = U32(PLAYER_PTRS + 4);
+    U32(PLAYER_PTRS + 4) = t;
+}
+static void trap_begin(unsigned int obj, int draw) {
+    int lvl = trap_depth++;
+    if (lvl >= 4) return;
+    trap_swap[lvl] = 0;
+    if (U8(PLAYERS) != 2 || !((U8(MODE) & 1) || drawing_split) || recomp_get_config_u32("traps") != 0) return;
+    if (U32(PLAYER_PTRS) != SLOT0_DATA) return;      // already swapped by something else
+    int swap = draw ? (drawing_split && U8(0x8016A40F) == 1) : trap_room_is_p2_only(obj);
+    if (!swap) return;
+    trap_swap_players();
+    trap_swap[lvl] = 1;
+}
+static void trap_end(void) {
+    if (trap_depth <= 0) { trap_depth = 0; return; }
+    int lvl = --trap_depth;
+    if (lvl >= 4 || !trap_swap[lvl]) return;
+    trap_swap[lvl] = 0;
+    trap_swap_players();
+}
+RECOMP_HOOK("func_800D5094") void coop_trap_update_begin(unsigned int obj) { trap_begin(obj, 0); }
+RECOMP_HOOK_RETURN("func_800D5094") void coop_trap_update_end(void) { trap_end(); }
+RECOMP_HOOK("func_800D500C") void coop_trap_draw_begin(unsigned int obj) { trap_begin(obj, 1); }
+RECOMP_HOOK_RETURN("func_800D500C") void coop_trap_draw_end(void) { trap_end(); }
+RECOMP_HOOK("func_800D5884") void coop_beam_draw_begin(unsigned int obj) { trap_begin(obj, 1); }
+RECOMP_HOOK_RETURN("func_800D5884") void coop_beam_draw_end(void) { trap_end(); }
+
 static void ai_frame(void);
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     drawing_split = 0;

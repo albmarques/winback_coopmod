@@ -1046,3 +1046,13 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Causa provável:** para inimigos, a troca de sala só acontecia quando a sala do inimigo (`+0x8E`) era a do P2 e não a do P1; um inimigo que atira no P2 nem sempre tem essa sala registrada assim.
 - **Agora:** quem atira é identificado pelo objeto ou pelo objeto que disparou o projétil (`+0x20`), aceitando só dados de personagem. P1: regra do jogo. P2: sempre a sala do P2. Inimigo, com os jogadores em salas diferentes: a sala do P2 é usada se o inimigo está na sala do P2 (regra antiga), **ou** está mais perto do P2 que do P1, **ou** está mirando o P2 nesse quadro (`cur_enemy` com `swapped_players`).
 - Log: até 24 linhas por carga de fase, `coop: lad enemy_shot <objeto> <dados> <sala do inimigo> <ROOM_STATE P1> <ROOM_STATE P2> <regras: sala<<8 | perto<<4 | alvo> <trocou>`.
+
+## Passo 50: laser do stage 3 só liga com o P1 (v0.3.29)
+
+- **Relato:** no stage 3 há um laser que só ativa quando o P1 chega perto; com o P2 nada acontece.
+- **Código:** a família de objetos criada por `func_800D49A0` (emissor com atualização `func_800D5094` e desenho `func_800D500C`; feixe com desenho `func_800D5884`) compara a sala do objeto (`+0x8E`) com a sala/sub-sala **do P1** (`D_8016A410`/`D_8016A412`) no modo Story. A atualização mede a distância do objeto até `D_801390C0` (P1) para ligar e tocar o som (limite em `D_8011B930`), e o desenho do feixe testa o feixe contra `D_801390C0` com `func_800438F0`.
+- **Correção:** ganchos nas três funções:
+  - **atualização:** se o objeto está na sala do P2 e não na do P1, ou nas duas e o P2 está mais perto, `ROOM_STATE` e `PLAYER_PTRS[0]/[1]` são trocados durante a chamada (o P2 liga o laser);
+  - **desenhos:** ao desenhar a metade do P2 da tela dividida (`0x8016A40F == 1`), a mesma troca, para o feixe aparecer para o P2 e ser testado contra o P2 (atravessar o feixe dispara a armadilha como com o P1).
+  - Profundidade de chamada guardada (até 4 níveis); não age se `PLAYER_PTRS` já estiver trocado por outra parte do mod.
+- Opção `traps` ("On" padrão / "Off").

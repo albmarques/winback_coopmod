@@ -2,7 +2,7 @@
 
 [manifest]
 id = "winback_coop"
-version = "0.3.28"
+version = "0.3.29"
 display_name = "Story Co-op"
 description = "Two-player Story co-op (controller 2) in the game's two-view split screen. Includes the two-player Death Match HUD, Engineer (model 58) for player 2, enemies that see and attack the nearer living player and stay visible in either player's room, and optional friendly fire. Also shows a partner radar in the lower right of each view. Revive is not done yet."
 short_description = "Two-player Story co-op (split screen, HUD, Engineer P2, enemy AI)."
@@ -92,6 +92,14 @@ default = "Climber only"
 id = "shot_rooms"
 name = "Shots across rooms"
 description = "Co-op: shots of P2, and enemy shots at P2, also hit when P1 is in another room (the game only tests P1's room). Off: like the game."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "traps"
+name = "Traps for P2"
+description = "Co-op: the laser traps (stage 3) also switch on when P2 comes near, show in P2's view and are set off when P2 crosses the beam. Off: only P1, like the game."
 type = "Enum"
 options = [ "On", "Off" ]
 default = "On"

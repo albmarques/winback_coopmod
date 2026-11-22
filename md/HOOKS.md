@@ -19,6 +19,7 @@ O `RecompModTool` lê a tabela de símbolos em [winback.us.syms.toml](file:///C:
 | Função da ROM | VRAM (`size`) | Tipo | Função no `coop.c` | Responsabilidade |
 | :--- | :--- | :--- | :--- | :--- |
 | `func_8004394C` | `0x8004394C` | `HOOK` + `HOOK_RETURN` | `coop_hit_room_begin/end` | Teste de personagens do raio de tiro: no Story só testa a sala do P1; troca `ROOM_STATE` P1↔P2 quando quem atira é o P2 ou está na sala do P2 (Passo 47b). |
+| `func_800D5094` / `func_800D500C` / `func_800D5884` | `0x800D5094` / `0x800D500C` / `0x800D5884` | `HOOK` + `HOOK_RETURN` | `coop_trap_*` / `coop_beam_*` | Armadilha de laser (família de `func_800D49A0`): atualização usa o P2 quando o objeto está na sala dele (ou ele está mais perto); desenho na metade do P2 usa a sala e o ponteiro do P2 (Passo 50). |
 | `func_8004C438` | `0x8004C438` (`0x420`) | `HOOK` | `coop_stage_load` | Força `PLAYERS = 1` ao carregar fase Story e reseta estado de cutscene/buffers. |
 | `func_8006B310` | `0x8006B310` (`0x24`) | `HOOK` | `coop_stage_players` | Se a escolha for 2 PLAYER, copia o spawn do P1 para o P2 ao lado dele (`spawn_distance`/`spawn_side`, lado calculado pela câmera inicial), ativa `PLAYERS = 2`, cria a cópia do inventário do P2 e o objeto do HUD Versus. |
 | `func_80034364` | `0x80034364` (`0x1A0`) | `HOOK_RETURN` | `coop_keep_slot` | Restaura `p2 + 0x92 = 1` (`in_use`) após o spawner de inimigos limpar slots `1..7`. |
