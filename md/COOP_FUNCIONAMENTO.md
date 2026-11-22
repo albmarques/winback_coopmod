@@ -1039,3 +1039,10 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Mudanças:** a troca de `ROOM_STATE` agora guarda um sinalizador por nível de chamada (até 8) e desfaz na ordem certa; opção nova `shot_rooms` ("On"/"Off") para desligar só essa correção.
 - **Log novo:** uma vez por segundo, `coop: lad p2_state` com a ação e o sub-estado do P2, as flags `+0xF4` e `+0x88`, a posição, o `ROOM_STATE` dos dois, `PLAYERS` e a profundidade da troca de sala (+0x100 se o P2 estiver como jogador 1).
 - **Teste para isolar:** com `door_fix` em "Off" (P2 nasce no mesmo ponto do P1) e depois com `shot_rooms` em "Off".
+
+### Passo 47c: tiro dos inimigos no P2 (v0.3.28)
+
+- **Teste da v0.3.27:** o tiro do P2 passou a acertar os inimigos, mas o tiro dos inimigos ainda não acertava o P2.
+- **Causa provável:** para inimigos, a troca de sala só acontecia quando a sala do inimigo (`+0x8E`) era a do P2 e não a do P1; um inimigo que atira no P2 nem sempre tem essa sala registrada assim.
+- **Agora:** quem atira é identificado pelo objeto ou pelo objeto que disparou o projétil (`+0x20`), aceitando só dados de personagem. P1: regra do jogo. P2: sempre a sala do P2. Inimigo, com os jogadores em salas diferentes: a sala do P2 é usada se o inimigo está na sala do P2 (regra antiga), **ou** está mais perto do P2 que do P1, **ou** está mirando o P2 nesse quadro (`cur_enemy` com `swapped_players`).
+- Log: até 24 linhas por carga de fase, `coop: lad enemy_shot <objeto> <dados> <sala do inimigo> <ROOM_STATE P1> <ROOM_STATE P2> <regras: sala<<8 | perto<<4 | alvo> <trocou>`.

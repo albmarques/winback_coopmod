@@ -79,6 +79,7 @@ static int e1e0_mode;
 static void lad_event(const char *tag, int a, int b);   // ladder diagnosis (log)
 static void lad_log(const char *tag, const unsigned int *v, int n);
 static int hit_room_depth;
+static int hit_diag_lines;
 // Passo 47 diagnosis: after a P2 shot, the enemies near P2 and the rooms of everyone.
 static int shot_diag_lines = 99;
 static unsigned int shot_diag_tick;
@@ -593,6 +594,7 @@ RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
         lad_log("stage_load", v, 2);
     }
     radar_map_reset = 1;
+    hit_diag_lines = 0;
     spawn_guard = 90;
     spawn_guard_dist = -1.0f;
     lm_close_all();
@@ -1410,30 +1412,47 @@ RECOMP_HOOK_RETURN("func_8007A238") void coop_fade_draw_end(void) {
 // shooter (a0, or the object that fired it, a0 + 0x20) is P2, or a character standing in P2's
 // room and not in P1's, ROOM_STATE is swapped for the call, as for func_8003FCE4.
 static unsigned char hit_room_swap[8];
-static int hit_room_of(unsigned int obj, int *is_p2) {
-    *is_p2 = 0;
-    if (obj < 0x80000000u || obj >= 0x80800000u) return -2;
-    unsigned int d = U32(obj + 0x2C);
-    if (d == SLOT1_DATA) { *is_p2 = 1; return 0; }
-    if (d == SLOT0_DATA) return -3;
-    if (d < 0x80000000u || d >= 0x80800000u) return -2;
-    return S16(d + 0x8E);
+// The character data of the shooter: the object itself or, for a bullet, the object that fired
+// it (+0x20). 0 if none looks like a character.
+static unsigned int hit_shooter_data(unsigned int obj) {
+    for (int i = 0; i < 2; i++) {
+        if (obj < 0x80000000u || obj >= 0x80800000u) return 0;
+        unsigned int d = U32(obj + 0x2C);
+        if (d == SLOT0_DATA || d == SLOT1_DATA) return d;
+        if (d >= 0x80000000u && d < 0x80800000u && U16(d + 0x16EC) < 0x100u && S8(d + 0x176B) > 0) return d;
+        obj = U32(obj + 0x20);
+    }
+    return 0;
 }
 RECOMP_HOOK("func_8004394C") void coop_hit_room_begin(unsigned int shooter) {
     int lvl = hit_room_depth++;
     if (lvl < 8) hit_room_swap[lvl] = 0;
     if (lvl >= 8 || !coop_story_session() || U8(PLAYERS) != 2 || recomp_get_config_u32("shot_rooms") != 0) return;
-    int p2 = 0, r = hit_room_of(shooter, &p2);
-    if (!p2 && r == -2 && shooter >= 0x80000000u && shooter < 0x80800000u) {
-        unsigned int parent = U32(shooter + 0x20);    // a bullet: its shooter
-        r = hit_room_of(parent, &p2);
-    }
-    if (r == -3) return;                              // P1 shot: the game's own rule
-    int swap = p2;
-    if (!swap && r >= 0) {
-        short a0 = S16(ROOM_STATE + 0), a1 = S16(ROOM_STATE + 2);
-        short b0 = S16(ROOM_STATE + 4), b1 = S16(ROOM_STATE + 6);
-        swap = (r != a0 && r != a1) && (r == b0 || r == b1);
+    unsigned int d = hit_shooter_data(shooter);
+    if (d == 0 || d == SLOT0_DATA) return;            // P1 (or unknown): the game's own rule
+    short a0 = S16(ROOM_STATE + 0), a1 = S16(ROOM_STATE + 2);
+    short b0 = S16(ROOM_STATE + 4), b1 = S16(ROOM_STATE + 6);
+    int swap;
+    if (d == SLOT1_DATA) {
+        swap = 1;
+    } else {
+        // An enemy: v0.3.25 swapped only when its room (+0x8E) was P2's and not P1's, which
+        // missed the enemies shooting at P2 (v0.3.27 test). Now, with the players in different
+        // rooms, an enemy whose target is P2 or that is nearer to P2 tests P2's room.
+        if (a0 == b0) return;
+        short r = S16(d + 0x8E);
+        float x0 = F32(d + 0) - F32(SLOT0_DATA + 0), z0 = F32(d + 8) - F32(SLOT0_DATA + 8);
+        float x1 = F32(d + 0) - F32(SLOT1_DATA + 0), z1 = F32(d + 8) - F32(SLOT1_DATA + 8);
+        int near_p2 = (x1 * x1 + z1 * z1) < (x0 * x0 + z0 * z0);
+        int room_p2 = (r != a0 && r != a1) && (r == b0 || r == b1);
+        int tgt_p2 = (d == cur_enemy && swapped_players);
+        swap = room_p2 || near_p2 || tgt_p2;
+        if (hit_diag_lines < 24 && recomp_get_config_u32("log") != 0) {
+            hit_diag_lines++;
+            unsigned int v[7] = { shooter, d, (unsigned int)(unsigned short)r, U32(ROOM_STATE + 0), U32(ROOM_STATE + 4),
+                                  (unsigned int)((room_p2 << 8) | (near_p2 << 4) | tgt_p2), (unsigned int)swap };
+            lad_log("enemy_shot", v, 7);
+        }
     }
     if (!swap) return;
     unsigned int t = U32(ROOM_STATE);
