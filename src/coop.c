@@ -76,6 +76,7 @@ static unsigned char in_cutscene;
 static unsigned char c2e4_swapped;
 static unsigned char be18_swapped;
 static int e1e0_mode;
+static void lad_event(const char *tag, int a, int b);   // ladder diagnosis (log)
 static int tele_idx;
 
 static int story_play(void) {
@@ -467,18 +468,25 @@ static void lm_start_filter(void) {
 // Player update (func_80059E5C(obj), player = obj + 0x2C): firing, reloading, weapon change
 // and item use all happen inside it.
 static int inv_pu_entered;
+// Player being updated right now (0 / 1), -1 outside func_80059E5C. Events raised from a player's
+// own action code (e.g. the ladder check, event 30) belong to that player.
+static int updating_player = -1;
+
 RECOMP_HOOK("func_80059E5C") void coop_inv_player_begin(unsigned int obj) {
     inv_pu_entered = 0;
     lm_suppressed = -1;
+    updating_player = -1;
     if (obj >= 0x80000000u && obj < 0x80800000u) {
         unsigned int pl = U32(obj + 0x2C);
         if (pl == SLOT1_DATA || pl == SLOT0_DATA) {
+            updating_player = (pl == SLOT1_DATA) ? 1 : 0;
             inv_pu_entered = inv_enter(inv_slot_of(pl));
             lm_player_begin(pl, inv_slot_of(pl));
         }
     }
 }
 RECOMP_HOOK_RETURN("func_80059E5C") void coop_inv_player_end(void) {
+    updating_player = -1;
     lm_player_end();
     inv_leave(inv_pu_entered);
     inv_pu_entered = 0;
@@ -494,6 +502,7 @@ static int inv_cp_valid;
 static int inv_cp_swapped;
 
 RECOMP_HOOK("func_8009C8E0") void coop_checkpoint_save_begin(void) {
+    lad_event("checkpoint", 0, 0);
     // If P2's inventory is in the globals right now, put P1's back first so the game's own
     // checkpoint keeps P1's (and P2's copy below is the right one).
     inv_cp_swapped = 0;
@@ -1115,11 +1124,184 @@ static void coop_pickup_scale(int settle) {
     }
 }
 
+// Ladder diagnosis (option log): action 23 (ladder) / 9 (vault) of each player, the event flag
+// 0x8010E0F8, cutscene state and player order, plus the event calls made while someone is on a
+// ladder. One line when something changes, and every 8 frames while on the ladder.
+// "coop: lad <tag> a b c ..." with hex fields.
+static int lad_watch;                 // frames left to keep logging after a ladder/vault
+static int lad_cond_lines;            // condition lines logged for the current ladder
+static unsigned short lad_last_act[2] = { 0xFFFF, 0xFFFF };
+static unsigned char lad_last_cut = 0xFF;
+
+static void lad_log(const char *tag, const unsigned int *v, int n) {
+    static char line[160];
+    int k = 0;
+    const char *pre = "coop: lad ";
+    while (*pre) line[k++] = *pre++;
+    while (*tag && k < 40) line[k++] = *tag++;
+    for (int i = 0; i < n && k < 150; i++) {
+        line[k++] = ' ';
+        put_hex(line + k, v[i], 8);
+        k += 8;
+    }
+    line[k] = 0;
+    winback_mod_log(line);
+}
+
+static int lad_someone_on(void) {
+    unsigned short a0 = U16(SLOT0_DATA + 0x16EC), a1 = U16(SLOT1_DATA + 0x16EC);
+    return a0 == 23 || a0 == 9 || a1 == 23 || a1 == 9;
+}
+
+static void lad_state(int k, const char *why) {
+    unsigned int d = k ? SLOT1_DATA : SLOT0_DATA;
+    unsigned int v[10];
+    v[0] = (unsigned int)k;
+    v[1] = U16(d + 0x16EC);                          // action
+    v[2] = U8(d + 0x16F0);                           // sub-state (0x0B down, 0x0C up)
+    v[3] = (unsigned int)(unsigned short)S16(d + 0x16E4);   // animation
+    v[4] = U32(d + 0x16C8);                          // animation frame (float bits)
+    v[5] = U32(d + 0xF4) & 0xCu;                     // on the ground (0x4 / 0x8)
+    v[6] = U32(d + 4);                               // y (float bits)
+    v[7] = (unsigned int)in_cutscene | ((unsigned int)trigger_player << 4) | ((unsigned int)cutscene_protagonist << 8);
+    v[8] = (U32(PLAYER_PTRS) == SLOT1_DATA) ? 1u : 0u;   // 1 = P2 swapped in as player 1
+    v[9] = U16(0x8010E0F8);
+    lad_log(why, v, 10);
+}
+
+static void lad_frame(void) {
+    if (recomp_get_config_u32("log") == 0 || !coop_story_session()) return;
+    int on = lad_someone_on();
+    if (on) lad_watch = 240;
+    if (!on && lad_watch <= 0) lad_cond_lines = 0;
+    if (lad_watch <= 0) return;
+    lad_watch--;
+    for (int k = 0; k < 2; k++) {
+        unsigned int d = k ? SLOT1_DATA : SLOT0_DATA;
+        unsigned short a = U16(d + 0x16EC);
+        if (a != lad_last_act[k]) {
+            lad_last_act[k] = a;
+            lad_state(k, "act");
+        } else if ((a == 23 || a == 9) && (lm_tick & 7u) == 0) {
+            lad_state(k, "on");
+        }
+    }
+    if (in_cutscene != lad_last_cut) {
+        unsigned int v[3] = { in_cutscene, (unsigned int)cutscene_protagonist, (U32(PLAYER_PTRS) == SLOT1_DATA) ? 1u : 0u };
+        lad_last_cut = in_cutscene;
+        lad_log("cutscene", v, 3);
+    }
+}
+
+static void lad_event(const char *tag, int a, int b) {
+    if (recomp_get_config_u32("log") == 0 || !coop_story_session()) return;
+    if (!lad_someone_on() && lad_watch <= 0) return;
+    unsigned int v[6] = { (unsigned int)a, (unsigned int)b, (unsigned int)trigger_player, (unsigned int)in_cutscene,
+                          (U32(PLAYER_PTRS) == SLOT1_DATA) ? 1u : 0u, U16(0x8010E0F8) };
+    lad_log(tag, v, 6);
+}
+
+// Ladder diagnosis, part 2: the script conditions the game tests for event 15 (ladder), and the
+// zone markers of both players. func_8009C050 tries every enabled script with
+// func_8009BBB8(type, value, conditions); the first one whose conditions pass runs. Conditions
+// read PLAYER_PTRS[0] + 0x8A (zone marker) -> D_801D41D0 + marker * 60 (+0x2 flags, +0xC zone id).
+static void lad_markers(const char *tag) {
+    unsigned int v[10];
+    for (int k = 0; k < 2; k++) {
+        unsigned int d = k ? SLOT1_DATA : SLOT0_DATA;
+        unsigned int m = U16(d + 0x8A);
+        v[k * 4 + 0] = m;
+        v[k * 4 + 1] = U16(d + 0x90);
+        v[k * 4 + 2] = (m < 512u) ? U16(0x801D41D2u + m * 60u) : 0xFFFFu;   // zone flags
+        v[k * 4 + 3] = (m < 512u) ? U8(0x801D41DCu + m * 60u) : 0xFFu;      // zone id
+    }
+    v[8] = U16(0x8016A39Au);
+    v[9] = U16(0x8016A39Cu);
+    lad_log(tag, v, 10);
+}
+
+RECOMP_HOOK("func_8009BBB8") void lad_cond_begin(int type, int val, unsigned int cond) {
+    if ((type & 0xFF) != 15 || recomp_get_config_u32("log") == 0) return;
+    if (!lad_someone_on() && lad_watch <= 0) return;
+    if (lad_cond_lines >= 40) return;              // one event is enough
+    lad_cond_lines++;
+    if (cond < 0x80000000u || cond >= 0x80800000u) return;
+    unsigned int v[9];
+    v[0] = ((unsigned int)(type & 0xFF) << 16) | ((unsigned int)val & 0xFFFFu);
+    v[1] = cond;
+    for (int i = 0; i < 6; i++) v[2 + i] = U32((cond & ~3u) + (unsigned int)i * 4u);
+    v[8] = cond & 3u;                              // the bytes start this far into v[2]
+    lad_log("cond", v, 9);
+    if (lad_cond_lines == 1) lad_markers("markers");
+}
+
+// Ladder fade only on the climber's view (co-op). The ladder script fades the screen with
+// opcode 0x16 (func_8007A0D8 colour + func_8007A1C0 start); func_8007A280 (from func_800944E0)
+// moves the level D_8010AF14 to 0xFF and back, and the script waits for it, so the level itself
+// is left alone. Only the drawing changes:
+//   - func_80025F10 skips the 3D of both views while D_8010AF14 > 0x80: it is held at 0x80
+//     during the draw, so both views keep rendering;
+//   - func_8007A238 draws the full-screen fade sprite D_8010AF2C when D_8010AF14 != 0: it sees
+//     0 instead, and the mod draws the same colour and level over the climber's half only
+//     (func_8007CBC8 colour + func_8007CD50 rectangle, top view y 0..120, bottom 120..240).
+// Only within 400 frames of a player being in action 23 (ladder) or 9 (vault).
+#define FADE_LEVEL 0x8010AF14u
+#define FADE_SPRITE 0x8010AF2Cu
+extern void func_8007CBC8(int r, int g, int b, int a);
+extern void func_8007CD50(unsigned int dlpp, int x, int y, int w, int h);
+static unsigned int lad_act_tick = 0x80000000u;
+static int lad_act_player;
+static int fade_draw_saved = -1;     // D_8010AF14 held during func_80025F10
+static int fade_spr_saved = -1;      // D_8010AF14 hidden from func_8007A238
+
+static int fade_split_active(void) {
+    if (!coop_story_session() || U8(PLAYERS) != 2) return 0;
+    if (recomp_get_config_u32("ladder_fade") != 0) return 0;
+    return (unsigned int)(lm_tick - lad_act_tick) < 400u;
+}
+
+static void fade_track_ladder(void) {
+    for (int k = 0; k < 2; k++) {
+        unsigned short a = U16((k ? SLOT1_DATA : SLOT0_DATA) + 0x16EC);
+        if (a == 23 || a == 9) {
+            lad_act_tick = lm_tick;
+            lad_act_player = k;
+        }
+    }
+}
+
+RECOMP_HOOK("func_8007A238") void coop_fade_draw_begin(void) {
+    fade_spr_saved = -1;
+    if (!fade_split_active()) return;
+    int level = (fade_draw_saved >= 0) ? fade_draw_saved : U8(FADE_LEVEL);
+    if (level == 0) return;
+    fade_spr_saved = U8(FADE_LEVEL);
+    U8(FADE_LEVEL) = 0;                          // the game's full-screen sprite is skipped
+    int r = U8(FADE_SPRITE + 0x20), g = U8(FADE_SPRITE + 0x21), b = U8(FADE_SPRITE + 0x22);
+    func_8007CBC8(r, g, b, level);
+    int y0 = lad_act_player ? 120 : 0;
+    func_8007CD50(0x801D2C80u, -200, y0, 720, 120);   // wider than 320: covers widescreen sides too
+}
+
+RECOMP_HOOK_RETURN("func_8007A238") void coop_fade_draw_end(void) {
+    if (fade_spr_saved >= 0) {
+        U8(FADE_LEVEL) = (unsigned char)fade_spr_saved;
+        fade_spr_saved = -1;
+    }
+}
+
 static void ai_frame(void);
 RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     drawing_split = 0;
     lm_tick++;
     ai_frame();
+    lad_frame();
+    fade_track_ladder();
+    fade_draw_saved = -1;
+    if (fade_split_active() && U8(FADE_LEVEL) > 0x80) {
+        fade_draw_saved = U8(FADE_LEVEL);
+        U8(FADE_LEVEL) = 0x80;                   // keep the 3D of both views
+    }
     if (coop_story_session()) {
         // Spawn guard: if P2 appears on top of P1 right after a stage loads (something reset
         // its start point), move it to P1's position plus the start offset.
@@ -1173,6 +1355,10 @@ RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
 }
 
 RECOMP_HOOK_RETURN("func_80025F10") void coop_draw_end(void) {
+    if (fade_draw_saved >= 0) {
+        U8(FADE_LEVEL) = (unsigned char)fade_draw_saved;
+        fade_draw_saved = -1;
+    }
     if (drawing_split) {
         U8(MODE) = 1;
         U8(0x8016A495) = saved_a495;
@@ -1954,6 +2140,9 @@ RECOMP_HOOK("func_800944E0") void coop_event_mgr_begin(void) {
         }
         in_cutscene = 1;
     } else if (!in_cutscene && S16(0x8010E0F8) == 1) {
+        lad_event("flag15", 1, 0);
+        lad_cond_lines = 0;          // log the conditions of this attempt
+        if (recomp_get_config_u32("log") != 0) lad_markers("markers");
         // Event 15 (0x8010E0F8 == 1) is queued by Action 23 (ladder) and Action 9 (vault)
         // when the entry animation reaches frame 18.0f. Neither action pushes to func_8004DE48,
         // so detect which player is currently on the ladder/vault before func_8009C2E4(15, 0) runs.
@@ -1993,9 +2182,8 @@ RECOMP_HOOK_RETURN("func_800944E0") void coop_event_mgr_end(void) {
 }
 
 RECOMP_HOOK("func_8009C2E4") void coop_event_dispatch_begin(int type, int val) {
-    (void)type;
-    (void)val;
     c2e4_swapped = 0;
+    lad_event("c2e4", type, val);
     if (!coop_story_session() || in_cutscene) {
         return;
     }
@@ -2007,6 +2195,15 @@ RECOMP_HOOK("func_8009C2E4") void coop_event_dispatch_begin(int type, int val) {
     } else if (act0 == 23 || act0 == 25 || act0 == 12 || act0 == 13 || act0 == 9) {
         trigger_player = 0;
         trigger_ttl = 0;
+    }
+    // Event 30 (0x1E) is the ladder check func_8009C860 makes when Action is pressed at a ladder
+    // (0x800A9C18 in func_800A8ED0), before the player is put in action 23: it is raised from that
+    // player's own update, so the player being updated is the one at the ladder. Without this the
+    // check ran for P1 on P2's first try, the ladder script (0x35) didn't start and the climb was
+    // cancelled; the second try only worked because trigger_player was still 1 from the first.
+    if ((type & 0xFF) == 0x1E && updating_player >= 0) {
+        trigger_player = updating_player;
+        trigger_ttl = updating_player ? 180 : 0;
     }
     set_protagonist(trigger_player);
     if (trigger_player == 1 && U32(PLAYER_PTRS) == SLOT0_DATA) {
@@ -2024,8 +2221,9 @@ RECOMP_HOOK_RETURN("func_8009C2E4") void coop_event_dispatch_end(void) {
     }
 }
 
-RECOMP_HOOK("func_8009BE18") void coop_script_run_begin(void) {
+RECOMP_HOOK("func_8009BE18") void coop_script_run_begin(int script, int mode) {
     be18_swapped = 0;
+    lad_event("script", script, mode);
     if (!coop_story_session()) {
         return;
     }
@@ -2045,6 +2243,7 @@ RECOMP_HOOK_RETURN("func_8009BE18") void coop_script_run_end(void) {
 
 RECOMP_HOOK("func_8009E1E0") void coop_cutscene_mode_begin(int mode) {
     e1e0_mode = mode;
+    lad_event("e1e0", mode, 0);
     if (!coop_story_session()) {
         return;
     }

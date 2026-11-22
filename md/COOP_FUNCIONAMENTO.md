@@ -804,3 +804,48 @@ Existem dois modos possíveis de implementar a câmera de 1ª pessoa num hook no
 | `func_80034DBC` | `0x80034DBC` (`0x3B8`) | `RECOMP_HOOK_RETURN` | No fim do update da câmera de cada jogador (`idx = 0` ou `1`), sobrescreve `Eye` (`0x8015D6D8`, `0x801B0CE8`, `0x80178FB0`) e `LookAt` (`0x80158748`, `0x8015D268`, `0x801C3808`) usando a cabeça `player + 0x0CD4..0x0CDC` e os ângulos `+0x64`, `+0x158` (yaw) e `+0x154` (pitch), além de atualizar `cam_data + 0x00..0x30` e a matriz `cam_data + 0x44`. |
 | `func_80057100` | `0x80057100` (`0xAB4`) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` | Quando o personagem sendo desenhado (`U32(obj + 0x2C)`) for o dono do viewport atual (`PLAYER_PTRS[U8(0x8016A40F)]`) e estiver em 1ª pessoa, liga temporariamente `player + 0xF4 |= 0x100` (oculta os 15 ossos do corpo para não tampar a câmera, mantendo a arma/mira laser na mão e mantendo o personagem visível na tela do outro jogador). |
 
+
+---
+
+### Passo 44: Diagnóstico da escada do checkpoint do stage 1 (v0.3.14)
+- Sintoma (depois do Passo 43): no stage 1, na escada do checkpoint, o P2 desce e fica "voando"; com o P1 funciona.
+- O que se sabe da ação 23 (`func_800626E0`): no quadro 18.0 da animação de entrada ela liga `0x8010E0F8 = 1` (pede o script da escada, evento 15). No quadro 21.0 zera velocidades e para de aplicar o deslocamento da animação. Quando a animação termina, só sai da ação 23 (`+0x16EC = 0`) se estiver apoiada no chão (`+0xF4 & 0xC`); senão fica parada no ar. Então o P2 fica esperando um script que não o move, ou que move outro personagem.
+- Este build não muda o comportamento; só adiciona log (opção `log`), ativo enquanto alguém está na ação 23/9 e por 240 quadros depois:
+  - `coop: lad act|on k ação sub anim quadro chão y estado ordem flag`: mudança de ação, ou a cada 8 quadros na escada. `estado` = `in_cutscene | trigger_player<<4 | cutscene_protagonist<<8`. `ordem` = 1 se o P2 está trocado como jogador 1. `flag` = `0x8010E0F8`.
+  - `coop: lad cutscene in_cutscene protagonista ordem`: quando a cutscene liga ou desliga.
+  - `coop: lad flag15`, `c2e4 tipo valor`, `e1e0 modo`, `checkpoint`: eventos, com `trigger_player`, `in_cutscene`, ordem e flag.
+- Próximo passo: comparar um log do P1 descendo essa escada (funciona) com um do P2 (falha) e corrigir onde o caminho do P2 diverge.
+
+### Passo 44b: O que o log do P2 na escada mostrou (v0.3.15)
+- Log do P2 (v0.3.14): ação 23 com sub-estado 0x0C, animação 0x83D e depois 0x872, quadros andando normalmente. `flag15` aparece com `trigger_player = 1`, e o `c2e4 0F` roda com o P2 trocado como jogador 1. Mas **nenhum `e1e0`** aparece e a cutscene não liga: o script da escada não foi escolhido. A animação termina e o P2 volta para a ação 0 parado lá em cima.
+- No evento 15, `func_8009C2E4` chama `func_8009C050(15, 0)`. Ela percorre os scripts ativos (`func_8009C01C`) e testa as condições de cada um com `func_8009BBB8(tipo, valor, condições)` (interpretador com tabela de saltos `jtbl_801195E0`, 0x22 opcodes); o primeiro que passa roda em `func_8009BE18`. Nenhum passou para o P2.
+- Condições que dependem do jogador no interpretador:
+  - botões novos do P1 (`D_80187FB0 & D_80187FC0`);
+  - zona: `PLAYER_PTRS[0] + 0x8A` (marcador) → `D_801D41D0 + marcador * 60`; exige o bit 0x80 em `+0x2` e compara `+0xC` (id da zona).
+- O `+0x8A` dos jogadores não vem da posição: é gravado a partir de `D_8016A39A[+0x90]` (por exemplo em `func_8006208C` e `func_800643D8`), e no início da fase `func_8004C108` só grava `D_8016A39A[0]`. Hipótese: o marcador do P2 está desatualizado, e a condição de zona do script da escada do checkpoint falha.
+- A v0.3.15 registra no log (só no evento 15, com alguém na escada):
+  - `coop: lad cond valor ptr w0 w1 w2 w3 w4 w5 desloc`: os bytes de condição de cada script testado (6 palavras a partir do endereço alinhado; `desloc` = onde começam dentro da primeira);
+  - `coop: lad markers`: para P1 e P2, `+0x8A`, `+0x90`, flags e id da zona do marcador, e `D_8016A39A` / `D_8016A39C`.
+
+### Passo 44c: Script da escada chegando atrasado (v0.3.16)
+- Log da v0.3.15 (subindo depois da descida): a descida funcionou desta vez. Na tentativa que falhou, o P2 entra na ação 23 (`c2e4 1E 0D` = validação da escada 0x0D por `func_8009C860`), o `flag15` e o `c2e4 0F` acontecem logo em seguida, mas `e1e0 3` só aparece uns 85 quadros depois, quando a animação já acabou e o P2 já voltou para a ação 0. A cutscene liga e desliga na hora (`e1e0 0`), e a animação parece "cancelada". Na segunda tentativa o script chega a tempo. Ou seja, o script é escolhido tarde: alguma condição só fica verdadeira mais tarde.
+- A v0.3.16 só muda o log:
+  - o contador das linhas `cond` zera a cada pedido de script de escada (`flag15`), e nessa hora sai também `markers`;
+  - `cond` agora traz o tipo do evento junto do valor (`tipo << 16 | valor`);
+  - `coop: lad script id modo …`: cada vez que um script começa a rodar (`func_8009BE18`), para ver qual script roda e quando.
+
+### Passo 44d: Causa e correção da escada (v0.3.17)
+- O log da v0.3.16 resolveu a dúvida. Comparando as tentativas:
+  - O atraso do script da escada é normal: com o P1 também, o script 0x18 só faz `e1e0 3` depois que a animação da ação 23 acaba.
+  - Diferença real: ao apertar Ação na escada, `func_800A8ED0` (chamada só por `func_80059E5C`, a atualização do jogador) chama `func_8009C860(id)` → `func_8009C2E4(0x1E, id)`. Essa validação inicia o script de preparação da escada (0x35 na escada de subida). Com o P1 e na 2ª tentativa do P2, o `c2e4 1E 0D` é seguido de `script 35`. Na 1ª tentativa do P2 a validação saiu com `trigger_player = 0` (o P2 ainda não estava na ação 23, então a troca por ação não pegava), foi avaliada para o P1, o script 0x35 não começou e o script 0x18 nunca assumiu: a animação "cancelava". A 2ª tentativa só funcionava porque o `trigger_player = 1` da primeira ainda estava valendo (ttl 180).
+- Correção: `updating_player` guarda o jogador da `func_80059E5C` em andamento (0/1, -1 fora dela). Em `coop_event_dispatch_begin`, no evento 0x1E, `trigger_player = updating_player`, que é exatamente o jogador que apertou Ação na escada.
+- Também anotado: o sub-estado 0x0C é a descida (escada do checkpoint) e o 0x0B é a subida, ao contrário do que estava escrito no Passo 43.
+- O log de diagnóstico da escada (Passos 44 a 44c) continua no código, ativo só com a opção `log`.
+
+### Passo 45: Fade da escada só na tela de quem está na escada (v0.3.18, opção `ladder_fade`)
+- A tela preta da escada é do jogo. O script da escada usa o opcode 0x16 da VM de scripts (tabela de tratadores na ROM em 0xF4900, 44 entradas de 4 bytes; tratador `0x8009B3E8`): argumento 1 → `func_8007A0D8(0,0,0)` (cor) + `func_8007A1C0(1)` (começa a escurecer); argumento 0 → `func_8007A1C0(0)`. Obs.: o MD antigo chamava de fade o opcode cujo tratador é `0x8009AE40`, mas esse é o 0x04, que mostra mensagem (`func_8009A500`, arquivo de mensagens `D_9264B0`).
+- Estado do fade: `D_8010AF14` = nível (0..0xFF), `D_8010AF15` = direção, `D_8010AF16` = passo, `D_8010AF17` = avisar o script ao terminar. `func_8007A280` (chamada por `func_800944E0`) anima o nível; `func_8007A114` diz ao script se o fade terminou. O desenho é `func_8007A238` (chamada por `func_800943AC`): se o nível ≠ 0, desenha o sprite de tela cheia `D_8010AF2C` com essa transparência (`func_8007BAC4` + `func_8007A754`). Além disso, `func_80025F10` não desenha o 3D das vistas quando o nível passa de 0x80.
+- O nível não é alterado (o script espera o fade terminar), só o desenho, e só no co-op, até 400 quadros depois de alguém estar na ação 23 (escada) ou 9 (mureta):
+  - no gancho de `func_80025F10`, o nível é mantido em 0x80 durante o desenho e restaurado no retorno, então as duas vistas continuam com 3D;
+  - no gancho de `func_8007A238`, o nível vira 0 (o sprite de tela cheia não é desenhado) e o mod desenha a mesma cor com o mesmo nível só na metade de quem está na escada (`func_8007CBC8` + `func_8007CD50`, vista de cima y 0..120, vista de baixo y 120..240, de x -200 a 520 para cobrir as laterais do widescreen). O nível é restaurado no retorno.
+- Opção `ladder_fade`: "Climber only" (padrão) ou "Full screen" (como no jogo).

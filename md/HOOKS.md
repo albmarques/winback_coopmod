@@ -547,3 +547,9 @@ Lido do disassembly da ROM US (splat do WinBackRecomp), 2026-11-21. O que não f
 | `func_8004387C` (0x74) | `RECOMP_HOOK` | Distância entre dois pontos. Se a próxima chamada de raio usar o mesmo ponteiro de origem, o segundo ponto é a parede onde o tiro bate. |
 
 Histórico: v0.3.8 usou `func_800B8FB0` e v0.3.10 usou `func_800BABFC` (não pegavam o tiro do jogador); v0.3.12 removeu todos os ganchos de raio por suspeita de um travamento que depois se mostrou momentâneo; v0.3.13 voltou ao código da v0.3.11.
+
+## Fade da escada
+| Função | Tipo | Uso |
+|---|---|---|
+| `func_8007A238` (0x48) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` | Desenho do fade de tela cheia. Perto de uma escada/mureta no co-op, esconde o nível dele (0) e desenha o fade só na vista de quem está na escada; restaura no retorno. |
+| `func_80025F10` | (ganchos existentes) | Mantém `D_8010AF14` em no máximo 0x80 durante o desenho, para as duas vistas não perderem o 3D no fade. |
