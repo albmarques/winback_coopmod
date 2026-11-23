@@ -1721,6 +1721,38 @@ static void load_settle_frame(void) {
     }
 }
 
+// Passo 57: room desync. Stage 7 has a dark hole that P1 drops into (a vault/drop action, so
+// only P1 is moved by the script) to reach another area (room 0). P2 walked in after P1 and
+// stood right next to it, but kept room 5 (marker 5): its view drew only room 5, a black void
+// with floating crates. When P2 stays within 60 units of P1 for 30 frames of play while their
+// rooms differ, P2 gets P1's zone marker and the room the game derives from it
+// (func_8003CB80 / func_8003C58C, as func_80098F20 does).
+static int desync_frames;
+static void room_desync_frame(void) {
+    unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
+    if (!coop_story_session() || !(U16(STATE) & 1) || U32(PLAYER_PTRS) != a ||
+        recomp_get_config_u32("door_fix") != 0 || S8(a + 0x176B) <= 0 || S8(b + 0x176B) <= 0) {
+        desync_frames = 0;
+        return;
+    }
+    short ra = S16(a + 0x8E), rb = S16(b + 0x8E);
+    float px = F32(b + 0) - F32(a + 0), py = F32(b + 4) - F32(a + 4), pz = F32(b + 8) - F32(a + 8);
+    if (ra == rb || ra < 0 || px * px + pz * pz > 60.0f * 60.0f || py > 80.0f || py < -80.0f) {
+        desync_frames = 0;
+        return;
+    }
+    if (++desync_frames < 30) return;
+    desync_frames = 0;
+    U16(b + 0x8A) = U16(a + 0x8A);
+    S16(b + 0x8E) = func_8003CB80(U16(b + 0x8A) & 0xFFF);
+    func_8003C58C(b);
+    if (recomp_get_config_u32("log") != 0) {
+        unsigned int v[4] = { (unsigned int)(unsigned short)rb, (unsigned int)(unsigned short)ra,
+                              U16(b + 0x8A), (unsigned int)(unsigned short)S16(b + 0x8E) };
+        lad_log("room_desync", v, 4);
+    }
+}
+
 static void jump_follow_frame(void) {
     unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
     // Outside play (cutscenes, menus) or with the players swapped, keep the last position:
@@ -1753,6 +1785,7 @@ RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     itemdiag_frame();
     jump_follow_frame();
     load_settle_frame();
+    room_desync_frame();
     fade_track_ladder();
     fade_draw_saved = -1;
     if (fade_split_active() && U8(FADE_LEVEL) > 0x80) {

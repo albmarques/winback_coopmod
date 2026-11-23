@@ -1139,3 +1139,10 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Mudanças:**
   - `tele_follow` desligado: o P2 não acompanha mais os teleportes de script do P1 (a verificação abaixo cuida do lugar final);
   - `load_settle_frame` agora só exige estado de jogo (`STATE & 1`), espera 30 quadros de jogo depois da carga e então, até 900 quadros, leva o P2 parado e a mais de 500 do P1 para trás do P1.
+
+## Passo 57: buraco escuro do stage 7 deixa a vista do P2 preta (v0.3.41)
+
+- **Relato (print + log):** no stage 7 há um buraco escuro que leva a outra área. O P1 entrou; o P2 foi atrás e ficou num vazio preto com caixas soltas.
+- **Log:** o P1 passou para a sala 0 (marcador 0) em posições de script (2850/7650 e 2850/7370, valores redondos), entrando pela ação de pular/descer, que move só quem a usa. O P2 andou até ficar praticamente no mesmo ponto do P1 (2845/7620), mas continuou com a sala 5 e o marcador 5. Como cada vista desenha a sala do seu jogador, a do P2 desenhava a sala 5 vista de dentro da área nova: um vazio com as caixas da sala 5.
+- **Correção (`room_desync_frame`):** se o P2 fica a menos de 60 unidades do P1 (e até 80 de altura) por 30 quadros de jogo com salas diferentes (`+0x8E`), o P2 recebe o marcador de zona do P1 (`+0x8A`) e a sala que o jogo calcula a partir dele (`func_8003CB80`, `func_8003C58C`), do mesmo jeito que `func_80098F20`. Faz parte da opção `door_fix`.
+- Log: `coop: lad room_desync <sala antiga do P2> <sala do P1> <marcador> <sala nova>`.
