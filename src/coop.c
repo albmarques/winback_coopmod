@@ -1753,6 +1753,28 @@ static void room_desync_frame(void) {
     }
 }
 
+// Passo 58 diagnosis: stairs / invisible floor. Each player's floor triangle (+0x90), zone
+// marker, height (Y), floor flags (+0xF4) and action, whenever the triangle changes or the
+// height jumps more than 40 in one frame.
+static unsigned int floor_last_tri[2] = { 0xFFFFu, 0xFFFFu };
+static float floor_last_y[2];
+static void floor_diag_frame(void) {
+    if (recomp_get_config_u32("log") == 0 || !coop_story_session() || !(U16(STATE) & 1)) return;
+    for (int k = 0; k < 2; k++) {
+        unsigned int d = k ? SLOT1_DATA : SLOT0_DATA, o = k ? SLOT0_DATA : SLOT1_DATA;
+        unsigned int tri = U16(d + 0x90);
+        float y = F32(d + 4), dy = y - floor_last_y[k];
+        int jump = (dy > 40.0f || dy < -40.0f);
+        if (tri != floor_last_tri[k] || jump) {
+            unsigned int v[9] = { (unsigned int)k | (jump ? 0x10u : 0u), tri, U16(d + 0x8A), U32(d + 4), U32(d + 0xF4),
+                                  U16(d + 0x16EC), U32(d + 0), U32(d + 8), U32(o + 4) };
+            lad_log("floor", v, 9);
+        }
+        floor_last_tri[k] = tri;
+        floor_last_y[k] = y;
+    }
+}
+
 static void jump_follow_frame(void) {
     unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
     // Outside play (cutscenes, menus) or with the players swapped, keep the last position:
@@ -1786,6 +1808,7 @@ RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     jump_follow_frame();
     load_settle_frame();
     room_desync_frame();
+    floor_diag_frame();
     fade_track_ladder();
     fade_draw_saved = -1;
     if (fade_split_active() && U8(FADE_LEVEL) > 0x80) {
