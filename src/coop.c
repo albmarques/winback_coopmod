@@ -589,8 +589,12 @@ static float spawn_sqrt(float v) {
 // sin without libm: range-reduce to [-pi, pi], then a 9th-order Taylor series.
 static float spawn_sin(float x) {
     const float pi = 3.14159265f, tau = 6.28318531f;
-    for (int i = 0; i < 8 && x > pi; i++) x -= tau;
-    for (int i = 0; i < 8 && x < -pi; i++) x += tau;
+    // v0.3.47: headings are not kept in [-pi, pi] (stage 9 log: -494.7); reduce any size.
+    if (!(x == x) || x > 1.0e6f || x < -1.0e6f) return 0.0f;
+    int k = (int)(x / tau);
+    x -= (float)k * tau;
+    if (x > pi) x -= tau;
+    else if (x < -pi) x += tau;
     if (x > pi * 0.5f) x = pi - x;
     else if (x < -pi * 0.5f) x = -pi - x;
     float x2 = x * x;
@@ -1684,6 +1688,7 @@ extern void func_8003C58C(unsigned int player);
 static void p2_put_behind_p1(float back) {
     unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
     float h = F32(a + 0x64);
+    if (!(h == h) || h > 1.0e6f || h < -1.0e6f) { h = 0.0f; back = 0.0f; }
     F32(b + 0) = F32(a + 0) - spawn_sin(h) * back;
     F32(b + 4) = F32(a + 4);
     F32(b + 8) = F32(a + 8) - spawn_sin(h + 1.5707963f) * back;
@@ -1745,6 +1750,7 @@ static int join_who = -1, join_wait;
 static unsigned int join_moved_tick[2];
 static void put_behind(unsigned int b, unsigned int a, float back) {
     float h = F32(a + 0x64);
+    if (!(h == h) || h > 1.0e6f || h < -1.0e6f) { h = 0.0f; back = 0.0f; }
     F32(b + 0) = F32(a + 0) - spawn_sin(h) * back;
     F32(b + 4) = F32(a + 4);
     F32(b + 8) = F32(a + 8) - spawn_sin(h + 1.5707963f) * back;

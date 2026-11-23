@@ -2,7 +2,7 @@
 
 [manifest]
 id = "winback_coop"
-version = "0.3.46"
+version = "0.3.47"
 display_name = "Story Co-op"
 description = "Two-player Story co-op (controller 2) in the game's two-view split screen. Includes the two-player Death Match HUD, Engineer (model 58) for player 2, enemies that see and attack the nearer living player and stay visible in either player's room, and optional friendly fire. Also shows a partner radar in the lower right of each view. Revive is not done yet."
 short_description = "Two-player Story co-op (split screen, HUD, Engineer P2, enemy AI)."

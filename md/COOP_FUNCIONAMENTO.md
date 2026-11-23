@@ -1179,3 +1179,9 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 
 - **Log (v0.3.45):** o P2 entrou na sala 9, a cena rodou e o mod colocou o P1 50 unidades **atrás** do P2. Atrás é a direção da porta: o P1 caiu na porta, foi empurrado de volta para a sala 8 (z 5760) e essa volta contou como "entrar numa sala". Uma segunda cena logo depois achou que o P1 era quem tinha entrado e puxou o P2 para a sala 8.
 - **Correção:** quem é levado fica 60 unidades **à frente** de quem entrou (mais para dentro da sala nova), e uma troca de sala desse jogador até 5 s depois de ser levado não conta como entrada.
+
+### Passo 61c: jogo travou quando o P1 entrou na porta (v0.3.47)
+
+- **Log (v0.3.46):** o P1 entrou na sala 9 e o mod levou o P2 (`scene_join 0 8 9 9`), mas a posição nova do P2 saiu absurda (`5FF53F14` ≈ 3,5·10¹⁹) e o jogo travou.
+- **Causa:** o ângulo do P1 (`+0x64`) estava em -494,7 rad (o jogo não mantém o ângulo entre -π e π; o radar mostrou o mesmo valor). O `spawn_sin` só tirava 8 voltas antes da série de Taylor, então o seno explodiu.
+- **Correção:** `spawn_sin` reduz qualquer ângulo para [-π, π] pela divisão por 2π (e devolve 0 para NaN ou valores enormes); `put_behind` e `p2_put_behind_p1` colocam o jogador no mesmo ponto do outro se o ângulo for inválido. Isso vale para todos os lugares que usam o seno (posição inicial do P2, seguir no pulo, ajuste depois da carga).
