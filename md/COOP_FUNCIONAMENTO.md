@@ -1185,3 +1185,14 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Log (v0.3.46):** o P1 entrou na sala 9 e o mod levou o P2 (`scene_join 0 8 9 9`), mas a posição nova do P2 saiu absurda (`5FF53F14` ≈ 3,5·10¹⁹) e o jogo travou.
 - **Causa:** o ângulo do P1 (`+0x64`) estava em -494,7 rad (o jogo não mantém o ângulo entre -π e π; o radar mostrou o mesmo valor). O `spawn_sin` só tirava 8 voltas antes da série de Taylor, então o seno explodiu.
 - **Correção:** `spawn_sin` reduz qualquer ângulo para [-π, π] pela divisão por 2π (e devolve 0 para NaN ou valores enormes); `put_behind` e `p2_put_behind_p1` colocam o jogador no mesmo ponto do outro se o ângulo for inválido. Isso vale para todos os lugares que usam o seno (posição inicial do P2, seguir no pulo, ajuste depois da carga).
+
+### Passo 61d: P2 flutuando depois da porta (v0.3.48)
+
+- **Relato:** com a v0.3.47 a porta funcionou, mas o P2 foi colocado longe demais à frente do P1 e ficou no ar.
+- **Correção:** a distância à frente caiu de 60 para 20 unidades.
+
+## Passo 62: caixa de bomba tira vida só do P1 (diagnóstico, v0.3.48)
+
+- **Relato:** na sala depois dessa porta, quando a caixa de bomba explode, o P1 começa a perder vida aos poucos e o P2 não.
+- **Ainda sem causa:** nenhum dos lugares do código que mexem na vida (`+0x176B`) com o ponteiro do jogador 1 (`D_801390C0[0]`) parece um dano contínuo; falta saber quem tira a vida.
+- **Diagnóstico novo:** a cada queda de vida de um jogador, `coop: lad hp_drop <jogador> <vida antes> <vida depois> <ação> <sala> <marcador> <flags da zona> <+0xF4>` e, para cada personagem a até 800 unidades, `coop: lad hp_near <objeto> <update> <draw> <tipo> <vida> <distância>`.

@@ -1790,10 +1790,11 @@ static void scene_join_frame(void) {
     unsigned int a = k ? SLOT1_DATA : SLOT0_DATA, b = k ? SLOT0_DATA : SLOT1_DATA;
     if (S16(a + 0x8E) == S16(b + 0x8E) || S8(a + 0x176B) <= 0 || S8(b + 0x176B) <= 0) return;
     unsigned int old = U16(b + 0x8E);
+    // v0.3.48: 20 ahead (60 left P2 floating past a ledge in the stage 9 room).
     // v0.3.46: put ahead of the one who entered (further into the new room). Behind them is
     // towards the door: in the log P1 was put there, pushed back out through the door and a
     // second scene then pulled P2 out too.
-    put_behind(b, a, -60.0f);
+    put_behind(b, a, -20.0f);
     join_room[k ^ 1] = U16(b + 0x8E);
     join_tick[k ^ 1] = 0;
     join_moved_tick[k ^ 1] = lm_tick ? lm_tick : 1u;
@@ -1857,6 +1858,41 @@ static void floor_diag_frame(void) {
     }
 }
 
+// Passo 62 diagnosis: after a bomb crate blows up in the stage 9 room, P1 slowly loses HP and
+// P2 does not. On every HP drop of a player: player, old and new HP, action, room, zone marker
+// and its flags (D_801D41D2 + marker * 60), and the characters within 800 of that player
+// (object, update, draw, type, HP, distance), to find what deals the damage.
+static int hpd_last[2] = { -1, -1 };
+static void hp_drop_frame(void) {
+    if (recomp_get_config_u32("log") == 0 || !coop_story_session() || !(U16(STATE) & 1)) {
+        hpd_last[0] = hpd_last[1] = -1;
+        return;
+    }
+    for (int k = 0; k < 2; k++) {
+        unsigned int d = k ? SLOT1_DATA : SLOT0_DATA;
+        int hp = S8(d + 0x176B);
+        if (hpd_last[k] >= 0 && hp < hpd_last[k] && hp > 0) {
+            unsigned int m = U16(d + 0x8A);
+            unsigned int v[8] = { (unsigned int)k, (unsigned int)hpd_last[k], (unsigned int)hp, U16(d + 0x16EC),
+                                  U16(d + 0x8E), m, (m < 512u) ? U16(0x801D41D2u + m * 60u) : 0xFFFFu,
+                                  U32(d + 0xF4) };
+            lad_log("hp_drop", v, 8);
+            int n = 0;
+            for (unsigned int o = U32(0x801788F0); o >= 0x80000000u && o < 0x80800000u && n < 6; o = U32(o + 0x1C)) {
+                unsigned int e = U32(o + 0x2C);
+                if (e < 0x80000000u || e >= 0x80800000u || e == SLOT0_DATA || e == SLOT1_DATA) continue;
+                float x = F32(e + 0) - F32(d + 0), z = F32(e + 8) - F32(d + 8), q = x * x + z * z;
+                if (q > 800.0f * 800.0f) continue;
+                n++;
+                unsigned int w[6] = { o, U32(o + 0x24), U32(o + 0x28), U16(e + 0x92),
+                                      (unsigned int)(unsigned char)S8(e + 0x176B), (unsigned int)(int)spawn_sqrt(q) };
+                lad_log("hp_near", w, 6);
+            }
+        }
+        hpd_last[k] = hp;
+    }
+}
+
 static void jump_follow_frame(void) {
     unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
     // Outside play (cutscenes, menus) or with the players swapped, keep the last position:
@@ -1891,6 +1927,7 @@ RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     load_settle_frame();
     room_desync_frame();
     scene_join_frame();
+    hp_drop_frame();
     floor_diag_frame();
     fade_track_ladder();
     fade_draw_saved = -1;
