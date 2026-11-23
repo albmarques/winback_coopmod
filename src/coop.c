@@ -1742,6 +1742,7 @@ static void load_settle_frame(void) {
 static unsigned int join_room[2] = { 0xFFFFu, 0xFFFFu };
 static unsigned int join_tick[2];
 static int join_who = -1, join_wait;
+static unsigned int join_moved_tick[2];
 static void put_behind(unsigned int b, unsigned int a, float back) {
     float h = F32(a + 0x64);
     F32(b + 0) = F32(a + 0) - spawn_sin(h) * back;
@@ -1766,7 +1767,11 @@ static void scene_join_frame(void) {
         unsigned int d = k ? SLOT1_DATA : SLOT0_DATA;
         unsigned int r = U16(d + 0x8E);
         if (r != join_room[k]) {
-            if (join_room[k] != 0xFFFFu) join_tick[k] = lm_tick;
+            // v0.3.46: a room change right after this player was moved by the join (pushed back
+            // through the door) does not count as entering a room.
+            if (join_room[k] != 0xFFFFu &&
+                (join_moved_tick[k] == 0 || (unsigned int)(lm_tick - join_moved_tick[k]) > 300u))
+                join_tick[k] = lm_tick;
             join_room[k] = r;
         }
     }
@@ -1779,9 +1784,13 @@ static void scene_join_frame(void) {
     unsigned int a = k ? SLOT1_DATA : SLOT0_DATA, b = k ? SLOT0_DATA : SLOT1_DATA;
     if (S16(a + 0x8E) == S16(b + 0x8E) || S8(a + 0x176B) <= 0 || S8(b + 0x176B) <= 0) return;
     unsigned int old = U16(b + 0x8E);
-    put_behind(b, a, 50.0f);
+    // v0.3.46: put ahead of the one who entered (further into the new room). Behind them is
+    // towards the door: in the log P1 was put there, pushed back out through the door and a
+    // second scene then pulled P2 out too.
+    put_behind(b, a, -60.0f);
     join_room[k ^ 1] = U16(b + 0x8E);
     join_tick[k ^ 1] = 0;
+    join_moved_tick[k ^ 1] = lm_tick ? lm_tick : 1u;
     if (recomp_get_config_u32("log") != 0) {
         unsigned int v[4] = { (unsigned int)k, old, U16(a + 0x8E), U16(b + 0x8E) };
         lad_log("scene_join", v, 4);
