@@ -1158,3 +1158,12 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Relato (print + log):** no stage 8 o P2 consegue subir na metralhadora montada (ação 25, `0x19`), mas quem mira é o P1.
 - **Código:** a ação 25 do jogador é `func_800631DC` (tabela de ações `0x80105BF8`). A arma em si é atualizada por `func_80036830` (ponteiro em `0x80103DA4`): o usuário é `obj+0x20 -> +0x2C`; os botões são lidos pelo índice do jogador (`+0x90`: `0x80187FC0 + idx*8`, `0x801B2774 + idx*2`), mas o direcional analógico vem sempre do bloco do jogador 1, `D_801659C0` (os blocos têm `0x18` bytes por jogador, como em `func_800A8ED0`). O giro fica em `D_80103DA8`.
 - **Correção (`coop_mgun_begin/end`):** quando o usuário da arma é o P2 (índice 1, ação 25), o bloco do analógico do P2 (`0x801659D8`) é copiado sobre o do jogador 1 durante `func_80036830` e restaurado no retorno.
+
+## Passo 60: duas escadas ao mesmo tempo jogam o P2 para fora do mapa (v0.3.44)
+
+- **Relato:** quando os dois sobem escadas diferentes ao mesmo tempo, o P2 buga e vai para fora do mapa.
+- **Causa provável (sem log):** o pedido do script da escada é um só (`0x8010E0F8 = 1`, ligado pela ação 23 no quadro 18 da animação de entrada). O mod decidia quem era o dono do pedido pela ação: se o P2 estava na ação 23, o script rodava para ele, mesmo quando quem tinha chegado ao quadro 18 era o P1. Com os dois na ação 23, o script da escada do P1 rodava com o P2 trocado como jogador 1, e o teleporte (`func_80098F20`) levava o P2 para os pontos da escada do P1. Além disso, o segundo pedido se perdia (o sinal já estava ligado) e esse jogador ficava parado na ação 23 esperando um script que não vinha.
+- **Correção:**
+  - `flag15_owner`: na atualização de cada jogador (`func_80059E5C`), se `0x8010E0F8` passou para 1 durante ela, aquele jogador é o dono do pedido. O gerenciador de eventos (`coop_event_mgr_begin`) e o despacho do evento 15 (`coop_event_dispatch_begin`) usam o dono quando ele é conhecido; o palpite pela ação só fica para quando não é.
+  - `ladder_requeue_frame`: se um jogador fica 20 quadros na ação 23, depois do quadro 18, fora do chão, sem pedido pendente e sem cena, o pedido é ligado de novo para ele.
+- Log: `coop: lad flag15_owner <jogador>` e `coop: lad ladder_requeue <jogador> <quadro>`.

@@ -485,6 +485,10 @@ static int inv_pu_entered;
 // Player being updated right now (0 / 1), -1 outside func_80059E5C. Events raised from a player's
 // own action code (e.g. the ladder check, event 30) belong to that player.
 static int updating_player = -1;
+// Passo 60: who raised the ladder / vault event (0x8010E0F8 = 1) during their own update.
+static int flag15_owner = -1;
+static short flag15_before;
+static int lad_stuck[2];
 
 RECOMP_HOOK("func_80059E5C") void coop_inv_player_begin(unsigned int obj) {
     inv_pu_entered = 0;
@@ -494,12 +498,20 @@ RECOMP_HOOK("func_80059E5C") void coop_inv_player_begin(unsigned int obj) {
         unsigned int pl = U32(obj + 0x2C);
         if (pl == SLOT1_DATA || pl == SLOT0_DATA) {
             updating_player = (pl == SLOT1_DATA) ? 1 : 0;
+            flag15_before = S16(0x8010E0F8);
             inv_pu_entered = inv_enter(inv_slot_of(pl));
             lm_player_begin(pl, inv_slot_of(pl));
         }
     }
 }
 RECOMP_HOOK_RETURN("func_80059E5C") void coop_inv_player_end(void) {
+    if (updating_player >= 0 && flag15_before != 1 && S16(0x8010E0F8) == 1) {
+        flag15_owner = updating_player;
+        if (recomp_get_config_u32("log") != 0) {
+            unsigned int v[1] = { (unsigned int)updating_player };
+            lad_log("flag15_owner", v, 1);
+        }
+    }
     updating_player = -1;
     lm_player_end();
     inv_leave(inv_pu_entered);
@@ -2723,6 +2735,35 @@ RECOMP_HOOK("func_8004DE48") void coop_event_push(int type, int sub, int val, un
     }
 }
 
+// Passo 60: there is one ladder event flag. If both players reach the ladder trigger frame at
+// once, the second request is lost and that player hangs in action 23 (on a ladder, past the
+// trigger frame 18, off the ground) waiting for a script that never comes. After 20 such frames
+// with no event pending and no cutscene, the request is raised again for that player.
+static void ladder_requeue_frame(void) {
+    if (in_cutscene || S16(0x8010E0F8) != 0 || !(U16(STATE) & 1)) {
+        lad_stuck[0] = lad_stuck[1] = 0;
+        return;
+    }
+    for (int k = 0; k < 2; k++) {
+        unsigned int d = k ? SLOT1_DATA : SLOT0_DATA;
+        float fr = F32(d + 0x16C8);
+        if (U16(d + 0x16EC) == 23 && fr >= 18.5f && (U32(d + 0xF4) & 0xCu) == 0 && S8(d + 0x176B) > 0) {
+            if (++lad_stuck[k] >= 20) {
+                lad_stuck[0] = lad_stuck[1] = 0;
+                U16(0x8010E0F8) = 1;
+                flag15_owner = k;
+                if (recomp_get_config_u32("log") != 0) {
+                    unsigned int v[2] = { (unsigned int)k, U32(d + 0x16C8) };
+                    lad_log("ladder_requeue", v, 2);
+                }
+                return;
+            }
+        } else {
+            lad_stuck[k] = 0;
+        }
+    }
+}
+
 RECOMP_HOOK("func_800944E0") void coop_event_mgr_begin(void) {
     evt_mgr_saved = 0;
     if (!coop_story_session()) {
@@ -2750,7 +2791,11 @@ RECOMP_HOOK("func_800944E0") void coop_event_mgr_begin(void) {
         // so detect which player is currently on the ladder/vault before func_8009C2E4(15, 0) runs.
         unsigned short act0 = U16(SLOT0_DATA + 0x16EC);
         unsigned short act1 = U16(SLOT1_DATA + 0x16EC);
-        if (act1 == 23 || act1 == 9) {
+        if (flag15_owner >= 0) {
+            // Passo 60: both can be on ladders at once; the one who raised the event goes.
+            trigger_player = flag15_owner;
+            trigger_ttl = flag15_owner ? 180 : 0;
+        } else if (act1 == 23 || act1 == 9) {
             trigger_player = 1;
             trigger_ttl = 180;
         } else if (act0 == 23 || act0 == 9) {
@@ -2758,6 +2803,8 @@ RECOMP_HOOK("func_800944E0") void coop_event_mgr_begin(void) {
             trigger_ttl = 0;
         }
     }
+    if (!in_cutscene && S16(0x8010E0F8) != 1) flag15_owner = -1;
+    ladder_requeue_frame();
     unsigned int p1 = U32(PLAYER_PTRS);
     unsigned int p2 = U32(PLAYER_PTRS + 4);
     if (p1 != 0 && p2 != 0 && U16(p1 + 0x16EC) < 2 && U16(p2 + 0x16EC) < 2) {
@@ -2803,6 +2850,10 @@ RECOMP_HOOK("func_8009C2E4") void coop_event_dispatch_begin(int type, int val) {
     // player's own update, so the player being updated is the one at the ladder. Without this the
     // check ran for P1 on P2's first try, the ladder script (0x35) didn't start and the climb was
     // cancelled; the second try only worked because trigger_player was still 1 from the first.
+    if ((type & 0xFF) == 15 && flag15_owner >= 0 && S16(0x8010E0F8) == 1) {
+        trigger_player = flag15_owner;
+        trigger_ttl = flag15_owner ? 180 : 0;
+    }
     if ((type & 0xFF) == 0x1E && updating_player >= 0) {
         trigger_player = updating_player;
         trigger_ttl = updating_player ? 180 : 0;
