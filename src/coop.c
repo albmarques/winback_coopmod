@@ -1753,20 +1753,20 @@ static void room_desync_frame(void) {
     }
 }
 
-// Passo 58 diagnosis: stairs / invisible floor. Each player's floor triangle (+0x90), zone
-// marker, height (Y), floor flags (+0xF4) and action, whenever the triangle changes or the
-// height jumps more than 40 in one frame.
+// Passo 58 diagnosis: stairs / invisible floor. Each player's index (+0x90), zone
+// marker, height (Y), floor flags (+0xF4) and action, whenever the zone marker changes or the
+// height jumps more than 40 in one frame. (+0x90 is the player index, not a floor triangle.)
 static unsigned int floor_last_tri[2] = { 0xFFFFu, 0xFFFFu };
 static float floor_last_y[2];
 static void floor_diag_frame(void) {
     if (recomp_get_config_u32("log") == 0 || !coop_story_session() || !(U16(STATE) & 1)) return;
     for (int k = 0; k < 2; k++) {
         unsigned int d = k ? SLOT1_DATA : SLOT0_DATA, o = k ? SLOT0_DATA : SLOT1_DATA;
-        unsigned int tri = U16(d + 0x90);
+        unsigned int tri = U16(d + 0x8A);
         float y = F32(d + 4), dy = y - floor_last_y[k];
         int jump = (dy > 40.0f || dy < -40.0f);
         if (tri != floor_last_tri[k] || jump) {
-            unsigned int v[9] = { (unsigned int)k | (jump ? 0x10u : 0u), tri, U16(d + 0x8A), U32(d + 4), U32(d + 0xF4),
+            unsigned int v[9] = { (unsigned int)k | (jump ? 0x10u : 0u), U16(d + 0x90), tri, U32(d + 4), U32(d + 0xF4),
                                   U16(d + 0x16EC), U32(d + 0), U32(d + 8), U32(o + 4) };
             lad_log("floor", v, 9);
         }
@@ -2503,6 +2503,32 @@ RECOMP_HOOK_RETURN("func_800ABC04") void coop_wall_cover_end(void) {
         U8(MODE) = 1;
         cover_split = 0;
     }
+}
+
+// Passo 59: player-mounted machine gun (stage 8). The player uses it with action 25; the gun's
+// update, func_80036830, reads the buttons of its user by the player index (+0x90), but the
+// stick only from player 1's block (D_801659C0, 0x18 bytes per player). While P2 is the user,
+// P2's stick block is copied over player 1's for the call and restored after.
+static unsigned char mgun_saved[0x18];
+static int mgun_swapped;
+RECOMP_HOOK("func_80036830") void coop_mgun_begin(unsigned int obj) {
+    mgun_swapped = 0;
+    if (!coop_story_session() || obj == 0) return;
+    unsigned int parent = U32(obj + 0x20);
+    if (parent < 0x80000000u || parent >= 0x80800000u) return;
+    unsigned int p = U32(parent + 0x2C);
+    if (p != SLOT1_DATA || S16(p + 0x90) != 1 || U16(p + 0x16EC) != 0x19) return;
+    for (int i = 0; i < 0x18; i++) {
+        mgun_saved[i] = U8(0x801659C0u + (unsigned int)i);
+        U8(0x801659C0u + (unsigned int)i) = U8(0x801659D8u + (unsigned int)i);
+    }
+    mgun_swapped = 1;
+}
+
+RECOMP_HOOK_RETURN("func_80036830") void coop_mgun_end(void) {
+    if (!mgun_swapped) return;
+    for (int i = 0; i < 0x18; i++) U8(0x801659C0u + (unsigned int)i) = mgun_saved[i];
+    mgun_swapped = 0;
 }
 
 RECOMP_HOOK("func_8003C58C") void coop_room_begin(void) {
