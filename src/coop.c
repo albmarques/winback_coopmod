@@ -1693,12 +1693,14 @@ static void settle_set_anchor(void) {
 static void load_settle_frame(void) {
     unsigned int a = SLOT0_DATA, b = SLOT1_DATA;
     if (settle_frames < 0 || !coop_story_session() || U32(PLAYER_PTRS) != a) return;
-    if (!(U16(STATE) & 1) || in_cutscene || U8(CUTSCENE_FLAG) != 0 || U8(CUTSCENE_CAM) != 0 ||
-        (U16(SCRIPT_FLAGS) & 0x0010) != 0) return;
+    // v0.3.40: only "in play" counts. The scene flags (in_cutscene, CUTSCENE_FLAG/CAM, script
+    // bit 4) stayed set after the stage 5 intro, so the check never ran (no log line at all).
+    if (!(U16(STATE) & 1)) return;
     // v0.3.39: anchor on the first frame of play, not right after the load: the players are
     // only placed later in the load, so the early anchor saw P2 "move" and the check stopped.
     if (settle_frames == 0) { settle_set_anchor(); settle_frames = 1; return; }
     if (++settle_frames > 900) { settle_frames = -1; return; }
+    if (settle_frames < 30) return;                  // let the intro finish placing P1
     if (recomp_get_config_u32("door_fix") != 0 || S8(a + 0x176B) <= 0 || S8(b + 0x176B) <= 0) return;
     float mx = F32(b + 0) - settle_anchor[0], mz = F32(b + 8) - settle_anchor[1];
     if (mx * mx + mz * mz > 40.0f * 40.0f) {                                // P2 is playing: stop
@@ -2873,6 +2875,10 @@ RECOMP_HOOK_RETURN("func_80098F20") void coop_cutscene_teleport_end(void) {
     if (recomp_get_config_u32("door_fix") != 0) return;
     if ((unsigned int)(lm_tick - lad_act_tick) < 400u && lad_act_player == 0) return;   // P1's ladder/vault
     if (S8(SLOT1_DATA + 0x176B) <= 0) return;
+    // v0.3.40: off. In the stage 5 intro P1 is teleported to point 4 and then walked back next
+    // to its start; following the teleport left P2 alone at point 4. The settle check
+    // (load_settle_frame) brings P2 to wherever P1 ends up instead.
+    if (1) return;
     tele_follow_nested = 1;
     func_80098F20(tele_pos_id, 1);
     tele_follow_nested = 0;

@@ -1132,3 +1132,10 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 
 - **Teste da v0.3.38:** no stage 5 o P2 continuou longe. O ponto de referência do P2 ("onde ele foi posto") era gravado no primeiro quadro depois da carga, antes de o jogo posicionar os jogadores; quando o jogo punha o P2 no lugar, o mod entendia que ele tinha andado sozinho e desligava a verificação.
 - **Correção:** a referência agora é gravada no primeiro quadro **de jogo** (fora de cena) depois da carga ou do teleporte. Log novo `coop: lad settle_stop <x> <z>` quando a verificação para porque o P2 andou.
+
+### Passo 56e: stage 5 de novo (v0.3.40)
+
+- **Log do teste (v0.3.39):** nenhuma linha `settle_follow`/`settle_stop`: as marcas de cena (`in_cutscene`, `CUTSCENE_FLAG/CAM`, bit 4 de `SCRIPT_FLAGS`) continuaram ligadas depois da introdução, então a verificação nunca contou quadros. Além disso, a introdução teleporta o P1 para o ponto 4 e depois o faz andar de volta para perto do início; o `tele_follow` (v0.3.35) tinha levado o P2 para o ponto 4 e o deixou lá sozinho (P2 parado em 5000/8845, P1 em 5970/5984).
+- **Mudanças:**
+  - `tele_follow` desligado: o P2 não acompanha mais os teleportes de script do P1 (a verificação abaixo cuida do lugar final);
+  - `load_settle_frame` agora só exige estado de jogo (`STATE & 1`), espera 30 quadros de jogo depois da carga e então, até 900 quadros, leva o P2 parado e a mais de 500 do P1 para trás do P1.
