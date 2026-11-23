@@ -1733,6 +1733,61 @@ static void load_settle_frame(void) {
     }
 }
 
+// Passo 61: a door into a new room can start a scene (stage 9 log: P2 went through the door from
+// room 8 into room 9, script 0x5F / 0x60 ran a scene, and the door stayed shut after it: P1 kept
+// walking into it, z stuck at 5765). The room change of each player is timed; when a scene
+// (func_8009E1E0 mode 1/3) starts within 10 s of one player entering a new room, and after the
+// scene the players are in different rooms with that player still in the new room, the other one
+// is put behind them (marker and room taken from them, as func_80098F20 does).
+static unsigned int join_room[2] = { 0xFFFFu, 0xFFFFu };
+static unsigned int join_tick[2];
+static int join_who = -1, join_wait;
+static void put_behind(unsigned int b, unsigned int a, float back) {
+    float h = F32(a + 0x64);
+    F32(b + 0) = F32(a + 0) - spawn_sin(h) * back;
+    F32(b + 4) = F32(a + 4);
+    F32(b + 8) = F32(a + 8) - spawn_sin(h + 1.5707963f) * back;
+    F32(b + 0x64) = h;
+    U16(b + 0x8A) = U16(a + 0x8A);
+    S16(b + 0x8E) = func_8003CB80(U16(b + 0x8A) & 0xFFF);
+    func_8003C58C(b);
+}
+static void scene_join_start(void) {
+    join_who = -1;
+    int best = -1;
+    for (int k = 0; k < 2; k++) {
+        if (join_tick[k] == 0 || (unsigned int)(lm_tick - join_tick[k]) > 600u) continue;
+        if (best < 0 || join_tick[k] > join_tick[best]) best = k;
+    }
+    if (best >= 0) { join_who = best; join_wait = 0; }
+}
+static void scene_join_frame(void) {
+    for (int k = 0; k < 2; k++) {
+        unsigned int d = k ? SLOT1_DATA : SLOT0_DATA;
+        unsigned int r = U16(d + 0x8E);
+        if (r != join_room[k]) {
+            if (join_room[k] != 0xFFFFu) join_tick[k] = lm_tick;
+            join_room[k] = r;
+        }
+    }
+    if (join_who < 0 || in_cutscene || !coop_story_session() || !(U16(STATE) & 1) ||
+        U32(PLAYER_PTRS) != SLOT0_DATA) return;
+    if (++join_wait < 10) return;
+    int k = join_who;
+    join_who = -1;
+    if (recomp_get_config_u32("door_fix") != 0) return;
+    unsigned int a = k ? SLOT1_DATA : SLOT0_DATA, b = k ? SLOT0_DATA : SLOT1_DATA;
+    if (S16(a + 0x8E) == S16(b + 0x8E) || S8(a + 0x176B) <= 0 || S8(b + 0x176B) <= 0) return;
+    unsigned int old = U16(b + 0x8E);
+    put_behind(b, a, 50.0f);
+    join_room[k ^ 1] = U16(b + 0x8E);
+    join_tick[k ^ 1] = 0;
+    if (recomp_get_config_u32("log") != 0) {
+        unsigned int v[4] = { (unsigned int)k, old, U16(a + 0x8E), U16(b + 0x8E) };
+        lad_log("scene_join", v, 4);
+    }
+}
+
 // Passo 57: room desync. Stage 7 has a dark hole that P1 drops into (a vault/drop action, so
 // only P1 is moved by the script) to reach another area (room 0). P2 walked in after P1 and
 // stood right next to it, but kept room 5 (marker 5): its view drew only room 5, a black void
@@ -1820,6 +1875,7 @@ RECOMP_HOOK("func_80025F10") void coop_draw_begin(void) {
     jump_follow_frame();
     load_settle_frame();
     room_desync_frame();
+    scene_join_frame();
     floor_diag_frame();
     fade_track_ladder();
     fade_draw_saved = -1;
@@ -2901,6 +2957,7 @@ RECOMP_HOOK("func_8009E1E0") void coop_cutscene_mode_begin(int mode) {
         return;
     }
     if (mode == 1 || mode == 3) {
+        if (!in_cutscene) scene_join_start();
         unsigned short act0 = U16(SLOT0_DATA + 0x16EC);
         unsigned short act1 = U16(SLOT1_DATA + 0x16EC);
         if (act1 == 23 || act1 == 25 || act1 == 12 || act1 == 13) {

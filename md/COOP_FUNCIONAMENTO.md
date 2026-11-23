@@ -1167,3 +1167,10 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
   - `flag15_owner`: na atualização de cada jogador (`func_80059E5C`), se `0x8010E0F8` passou para 1 durante ela, aquele jogador é o dono do pedido. O gerenciador de eventos (`coop_event_mgr_begin`) e o despacho do evento 15 (`coop_event_dispatch_begin`) usam o dono quando ele é conhecido; o palpite pela ação só fica para quando não é.
   - `ladder_requeue_frame`: se um jogador fica 20 quadros na ação 23, depois do quadro 18, fora do chão, sem pedido pendente e sem cena, o pedido é ligado de novo para ele.
 - Log: `coop: lad flag15_owner <jogador>` e `coop: lad ladder_requeue <jogador> <quadro>`.
+
+## Passo 61: porta com cena deixa o outro jogador do lado de fora (v0.3.45)
+
+- **Relato (print + log):** numa porta do mapa 0x11, logo que um dos jogadores entra começa uma cena, e depois dela o outro não consegue entrar e fica do lado de fora.
+- **Log:** o P2 passou da sala 8 para a sala 9; logo em seguida rodaram os scripts 0x5F e 0x60, com uma cena (`func_8009E1E0(3)`). Depois da cena o P1 continuou na sala 8 andando contra a porta (z travado em 5765, `45B427EC`), enquanto o P2 seguia pela sala 9. A porta fica fechada depois da cena, então quem ficou de fora não tem mais como passar.
+- **Correção (`scene_join_frame`):** o mod guarda o momento em que cada jogador muda de sala (`+0x8E`). Quando uma cena começa (`func_8009E1E0` modo 1 ou 3) até 10 s depois de um jogador entrar numa sala nova, e depois da cena os dois estão em salas diferentes, o outro jogador é colocado atrás de quem entrou (50 unidades, com o marcador de zona e a sala dele, como em `func_80098F20`). Faz parte da opção `door_fix`.
+- Log: `coop: lad scene_join <quem entrou> <sala antiga do outro> <sala de quem entrou> <sala nova do outro>`.
