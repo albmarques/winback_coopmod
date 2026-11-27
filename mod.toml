@@ -225,6 +225,14 @@ options = [ "Off", "On" ]
 default = "Off"
 
 [[manifest.config_options]]
+id = "first_person"
+name = "First-person mode (D-pad Up)"
+description = "When on, pressing D-pad Up toggles a first-person view for that player: the character holds the aim stance, the stick turns the view and the arms/gun follow it. A/Z fire, B reloads, C-Up switches weapon. Press D-pad Up again to go back to third person."
+type = "Enum"
+options = [ "Off", "On" ]
+default = "Off"
+
+[[manifest.config_options]]
 id = "log"
 name = "Log status"
 description = "Print the players' state to the log once a second (run the game with --console)."

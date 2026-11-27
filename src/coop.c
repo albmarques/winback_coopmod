@@ -370,12 +370,335 @@ static void lm_close_all(void) {
     lm_open[0] = lm_open[1] = 0;
 }
 
+static float spawn_sin(float x);
+
+// First-Person Mode (toggled on/off with D-pad Up):
+// Pressing D-pad Up in gameplay toggles first-person mode for that player. While enabled, the player
+// holds the aiming stance (R held), stands still, and the analog stick (left or right) rotates the
+// first-person camera together with the character's arms, hands, 3D weapon, and laser sight.
+// Pressing D-pad Up again immediately disables first-person mode and restores the 3rd-person camera.
+static int fps_held[2];
+static int fps_du_prev[2];
+static float fps_yaw[2];
+static float fps_pitch[2];
+static int fps_cam_saved[2];
+static float fps_saved_cam[2][8];
+static unsigned int fps_cur_cam_obj;
+static unsigned int fps_cur_ik_player;
+static unsigned int fps_hidden_player;
+static unsigned int fps_hidden_tbl;
+static unsigned int fps_saved_bones[15];
+static unsigned char fps_saved_lod;
+
+static float fps_norm_axis(int raw_v) {
+    float v = (float)raw_v * (1.0f / 70.0f);
+    if (v > -0.15f && v < 0.15f) return 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    if (v < -1.0f) v = -1.0f;
+    return v;
+}
+
+static void fps_apply_aim(unsigned int p, int k) {
+    F32(p + 0x0064) = fps_yaw[k];
+    F32(p + 0x0110) = fps_yaw[k]; // prevent func_800588FC (0x80058DEC) / func_8005DC88 (0x8005E0D0) from resetting +0x0064
+    F32(p + 0x0158) = 0.0f;
+    // In func_80055F6C and func_80069D44, negative +0x0154 pitches the torso and arms UP, positive pitches DOWN.
+    // Total pitch of arms + hands is 1.0 * (+0x0154) for all weapons (0.4 torso + 0.6 shoulder for handgun, 1.0 torso for others).
+    F32(p + 0x0154) = -fps_pitch[k];
+    F32(p + 0x015C) = 0.0f;
+    F32(p + 0x0160) = 0.0f;
+    U32(p + 0x00F8) |= 0x0200u; // prevent func_800588FC (0x80058A30) from decaying +0x0154/+0x0158
+    U32(0x80138EF8u + (unsigned int)k * 4u) = 0; // disable auto-aim snap while in 1st-person manual aim
+}
+
+// func_80052600 is called at 0x80055FB0 inside func_80055F6C, immediately before 0x80055FC8 rotates the
+// Chest (+0x0F38), Head (+0x0F44), Left Hand (+0x0F50), and Right Hand (+0x0F5C) IK targets by +0x0064, +0x0158, +0x0154
+// and before func_80069D44 (0x8005A4BC) builds the 15 bone matrices.
+RECOMP_HOOK("func_80052600") void coop_fps_ik_begin(unsigned int player) {
+    fps_cur_ik_player = (player == SLOT0_DATA || player == SLOT1_DATA) ? player : 0;
+}
+
+RECOMP_HOOK_RETURN("func_80052600") void coop_fps_ik_end(void) {
+    unsigned int p = fps_cur_ik_player;
+    fps_cur_ik_player = 0;
+    if (p == 0) return;
+    int k = (p == SLOT1_DATA) ? 1 : 0;
+    if (fps_held[k]) {
+        fps_apply_aim(p, k);
+    }
+}
+
+static int fps_can_activate(unsigned int p, int k) {
+    if (recomp_get_config_u32("first_person") != 1) return 0;
+    if (!(U8(MODE) & 1) || !(U16(STATE) & 1) || in_cutscene) return 0;
+    if (U8(CUTSCENE_FLAG) != 0 || U8(CUTSCENE_CAM) != 0) return 0;
+    if (lm_open[k] || S8(p + 0x176B) <= 0) return 0;
+    unsigned short act = U16(p + 0x16EC);
+    // Disallow during cover (6/7/8), vaults (9), doors (12/13), pickup (17), cutscene (18), death (22), ladders (23), switch/mgun (25)
+    if (act == 6 || act == 7 || act == 8 || act == 9 || act == 12 || act == 13 ||
+        act == 17 || act == 18 || act == 22 || act == 23 || act == 25) {
+        return 0;
+    }
+    return 1;
+}
+
+static void fps_player_input(unsigned int p, int k) {
+    unsigned int bn = BTN_NEW_P1 + (unsigned int)k * 2;
+    unsigned int raw = RAW_PADS + (unsigned int)k * 8;
+    unsigned short raw_btn = U16(raw);
+    WinbackPad wpad;
+    winback_mod_pad_read(k, &wpad);
+    int du_now = ((raw_btn & 0x0800u) != 0) || ((wpad.pad_buttons & WB_PAD_DU) != 0) || ((wpad.other_buttons & 0x0800u) != 0);
+    int du_pressed = (du_now && !fps_du_prev[k]) || ((U16(bn) & 0x0800u) != 0);
+    fps_du_prev[k] = du_now;
+
+    if (!fps_can_activate(p, k)) {
+        if (fps_held[k] && (S8(p + 0x176B) <= 0 || recomp_get_config_u32("first_person") != 1)) {
+            fps_held[k] = 0;
+            F32(p + 0x0154) = 0.0f;
+            F32(p + 0x0158) = 0.0f;
+        }
+        return;
+    }
+
+    if (du_pressed) {
+        U16(bn) &= (unsigned short)~0x0800u;
+        fps_held[k] ^= 1;
+        if (fps_held[k]) {
+            unsigned short act = U16(p + 0x16EC);
+            if (act == 3 || act == 4 || act == 5) {
+                fps_yaw[k] = F32(p + 0x0064) + F32(p + 0x0158);
+                fps_pitch[k] = -F32(p + 0x0154);
+            } else {
+                fps_yaw[k] = F32(p + 0x0064);
+                fps_pitch[k] = 0.0f;
+            }
+            if (recomp_get_config_u32("log") != 0) {
+                winback_mod_log(k ? "coop: fps P2 on" : "coop: fps P1 on");
+            }
+        } else {
+            F32(p + 0x0154) = 0.0f;
+            F32(p + 0x0158) = 0.0f;
+            if (recomp_get_config_u32("log") != 0) {
+                winback_mod_log(k ? "coop: fps P2 off" : "coop: fps P1 off");
+            }
+            return;
+        }
+    }
+
+    if (!fps_held[k]) {
+        return;
+    }
+
+    // Read analog stick (left stick or right stick, whichever has larger deflection)
+    float lx = fps_norm_axis(S8(raw + 2));
+    float ly = fps_norm_axis(S8(raw + 3));
+    float wx = wpad.left_x;
+    float wy = wpad.left_y;
+    if ((wx > 0.15f || wx < -0.15f) && (wx * wx > lx * lx)) lx = wx;
+    if ((wy > 0.15f || wy < -0.15f) && (wy * wy > ly * ly)) ly = wy;
+    float rx = wpad.right_x;
+    float ry = wpad.right_y;
+    float sx = (rx * rx > lx * lx) ? rx : lx;
+    float sy = (ry * ry > ly * ly) ? ry : ly;
+
+    // Fallback to C-Left / C-Right / C-Down if sticks are neutral (leave C-Up 0x0008 for weapon switch)
+    if (sx == 0.0f) {
+        if (raw_btn & 0x0002u) sx = -0.8f;      // C-Left
+        else if (raw_btn & 0x0001u) sx = 0.8f;  // C-Right
+    }
+    if (sy == 0.0f) {
+        if (raw_btn & 0x0004u) sy = -0.8f;      // C-Down
+    }
+
+    // Positive sx (stick right) decreases yaw; positive sy (stick up) increases pitch.
+    fps_yaw[k] -= sx * 0.045f;
+    fps_pitch[k] += sy * 0.035f;
+    if (fps_pitch[k] > 0.75f) fps_pitch[k] = 0.75f;
+    if (fps_pitch[k] < -0.55f) fps_pitch[k] = -0.55f;
+
+    fps_apply_aim(p, k);
+
+    // Inject R (0x0010) to hold the aiming stance (raises arms, 3D gun, and laser sight) and zero stick X/Y
+    // so the character stands still without walking or dodge-rolling, while preserving A/Z (fire), B (reload), and C-Up (weapon switch).
+    lm_saved_btn = U16(bn) & (unsigned short)~0x0800u;
+    lm_saved_raw0 = U32(raw);
+    lm_saved_raw1 = U32(raw + 4);
+
+    unsigned short new_btn = lm_saved_btn;
+    unsigned short held_btn = (raw_btn & (unsigned short)~0x0800u) | 0x0010u;
+    unsigned short raw_new = U16(raw + 6) & (unsigned short)~0x0800u;
+    if (U16(p + 0x16EC) < 2) {
+        new_btn |= 0x0010u;
+        raw_new |= 0x0010u;
+    }
+    U16(bn) = new_btn;
+    U16(raw) = held_btn;
+    S8(raw + 2) = 0;
+    S8(raw + 3) = 0;
+    U16(raw + 6) = raw_new;
+    lm_suppressed = k;
+}
+
+// Viewmodel FPS: in the player's own viewport, hide every bone except the forearms and hands
+// (bones 11, 12, 14, 15 = idx 10, 11, 13, 14; idx 14 carries the 3D weapon), and skip the dynamic joint
+// skinning (LOD = 3). The upper arms (idx 9, 12) were filling the bottom corners of the screen as huge
+// slabs because they start right next to the camera; the legs/pelvis also clipped when looking down.
+RECOMP_HOOK("func_80057100") void coop_fps_draw_begin(unsigned int obj) {
+    fps_hidden_player = 0;
+    fps_hidden_tbl = 0;
+    if (obj < 0x80000000u || obj >= 0x80800000u) return;
+    unsigned int player = U32(obj + 0x2C);
+    if (player != SLOT0_DATA && player != SLOT1_DATA) return;
+    int k = (player == SLOT1_DATA) ? 1 : 0;
+    if (!fps_held[k]) return;
+    int vp = drawing_split ? (U8(0x8016A40F) ? 1 : 0) : 0;
+    unsigned int vp_player = U32(PLAYER_PTRS + (unsigned int)vp * 4u);
+    if (player == vp_player) {
+        unsigned int tbl = U32(player + 0x1744);
+        if (tbl >= 0x80000000u && tbl < 0x80800000u) {
+            fps_hidden_player = player;
+            fps_hidden_tbl = tbl;
+            for (unsigned int i = 0; i < 15u; i++) {
+                fps_saved_bones[i] = U32(tbl + i * 4u);
+                if (i != 10u && i != 11u && i != 13u && i != 14u) U32(tbl + i * 4u) = 0xFFFFFFFFu;
+            }
+            fps_saved_lod = U8(player + 0x1768);
+            U8(player + 0x1768) = 3;
+        }
+    }
+}
+
+RECOMP_HOOK_RETURN("func_80057100") void coop_fps_draw_end(void) {
+    if (fps_hidden_player != 0 && fps_hidden_tbl != 0) {
+        for (unsigned int i = 0; i < 15u; i++) U32(fps_hidden_tbl + i * 4u) = fps_saved_bones[i];
+        U8(fps_hidden_player + 0x1768) = fps_saved_lod;
+        fps_hidden_player = 0;
+        fps_hidden_tbl = 0;
+    }
+}
+
+// Override gameplay camera (func_80034DBC) for any player holding D-pad Up.
+RECOMP_HOOK("func_80034DBC") void coop_fps_cam_begin(unsigned int cam_obj) {
+    fps_cur_cam_obj = cam_obj;
+    if (cam_obj < 0x80000000u || cam_obj >= 0x80800000u) return;
+    unsigned int cam_data = U32(cam_obj + 0x2C);
+    unsigned int player_obj = U32(cam_obj + 0x20);
+    if (cam_data < 0x80000000u || cam_data >= 0x80800000u) return;
+    if (player_obj < 0x80000000u || player_obj >= 0x80800000u) return;
+    unsigned int player = U32(player_obj + 0x2C);
+    if (player != SLOT0_DATA && player != SLOT1_DATA) return;
+    int k = (player == SLOT1_DATA) ? 1 : 0;
+    if (fps_cam_saved[k]) {
+        F32(cam_data + 0x00) = fps_saved_cam[k][0];
+        F32(cam_data + 0x04) = fps_saved_cam[k][1];
+        F32(cam_data + 0x08) = fps_saved_cam[k][2];
+        F32(cam_data + 0x0C) = fps_saved_cam[k][3];
+        F32(cam_data + 0x10) = fps_saved_cam[k][4];
+        F32(cam_data + 0x28) = fps_saved_cam[k][5];
+        F32(cam_data + 0x2C) = fps_saved_cam[k][6];
+        F32(cam_data + 0x30) = fps_saved_cam[k][7];
+        fps_cam_saved[k] = 0;
+    }
+    if (fps_held[k]) {
+        F32(cam_data + 0x110) = 0.0f; // prevent right stick from spinning 3rd-person cam in background
+    }
+}
+
+RECOMP_HOOK_RETURN("func_80034DBC") void coop_fps_cam_end(void) {
+    unsigned int cam_obj = fps_cur_cam_obj;
+    fps_cur_cam_obj = 0;
+    if (cam_obj < 0x80000000u || cam_obj >= 0x80800000u) return;
+    unsigned int cam_data = U32(cam_obj + 0x2C);
+    unsigned int player_obj = U32(cam_obj + 0x20);
+    if (cam_data < 0x80000000u || cam_data >= 0x80800000u) return;
+    if (player_obj < 0x80000000u || player_obj >= 0x80800000u) return;
+    unsigned int player = U32(player_obj + 0x2C);
+    if (player != SLOT0_DATA && player != SLOT1_DATA) return;
+    int k = (player == SLOT1_DATA) ? 1 : 0;
+    if (!fps_held[k] || !fps_can_activate(player, k)) {
+        if (S8(player + 0x176B) <= 0) fps_held[k] = 0;
+        return;
+    }
+    int idx = S16(cam_data + 0x18);
+    if (idx < 0 || idx > 1) idx = k;
+    short cam_mode = S16(cam_data + 0xEC);
+    if (cam_mode == 9) return;
+
+    // Save 3rd-person camera state so toggling D-pad Up off returns seamlessly
+    fps_saved_cam[k][0] = F32(cam_data + 0x00);
+    fps_saved_cam[k][1] = F32(cam_data + 0x04);
+    fps_saved_cam[k][2] = F32(cam_data + 0x08);
+    fps_saved_cam[k][3] = F32(cam_data + 0x0C);
+    fps_saved_cam[k][4] = F32(cam_data + 0x10);
+    fps_saved_cam[k][5] = F32(cam_data + 0x28);
+    fps_saved_cam[k][6] = F32(cam_data + 0x2C);
+    fps_saved_cam[k][7] = F32(cam_data + 0x30);
+    fps_cam_saved[k] = 1;
+
+    float yaw = fps_yaw[k];
+    float pitch = fps_pitch[k];
+    float sin_y = spawn_sin(yaw);
+    float cos_y = spawn_sin(yaw + 1.5707963f);
+    float sin_p = spawn_sin(pitch);
+    float cos_p = spawn_sin(pitch + 1.5707963f);
+    float fwd_x = sin_y * cos_p;
+    float fwd_y = sin_p;
+    float fwd_z = cos_y * cos_p;
+    float up_x = -sin_y * sin_p;
+    float up_y = cos_p;
+    float up_z = -cos_y * sin_p;
+
+    // Midpoint between Left Shoulder (bone 10, +0x0CE0..+0x0CE8) and Right Shoulder (bone 13, +0x0D04..+0x0D0C)
+    // calculated by func_80069D44. Because the arms pivot around the shoulders along (fwd_x, fwd_y, fwd_z),
+    // anchoring Eye at (ShoulderMid + up * 8.0f - fwd * 6.0f) keeps the arms, hands, and 3D gun locked to
+    // the camera aim at all pitch and yaw angles like a native FPS viewmodel.
+    float sx_pos = 0.5f * (F32(player + 0x0CE0) + F32(player + 0x0D04));
+    float sy_pos = 0.5f * (F32(player + 0x0CE4) + F32(player + 0x0D08));
+    float sz_pos = 0.5f * (F32(player + 0x0CE8) + F32(player + 0x0D0C));
+    float py = F32(player + 0x04);
+    if (!(sy_pos == sy_pos) || sy_pos < py + 20.0f || sy_pos > py + 250.0f) {
+        sx_pos = F32(player + 0x00);
+        sy_pos = py + ((U32(player + 0xF4) & 0x20u) ? 95.0f : 146.0f);
+        sz_pos = F32(player + 0x08);
+    }
+
+    // Eye height ~ eyes above the shoulder line (rotated with the aim) so the forearms/hands/gun sit in the
+    // lower-center of the screen instead of filling it.
+    float eye_x = sx_pos + up_x * 16.0f - fwd_x * 4.0f;
+    float eye_y = sy_pos + up_y * 16.0f - fwd_y * 4.0f;
+    float eye_z = sz_pos + up_z * 16.0f - fwd_z * 4.0f;
+    float look_x = eye_x + fwd_x * 400.0f;
+    float look_y = eye_y + fwd_y * 400.0f;
+    float look_z = eye_z + fwd_z * 400.0f;
+
+    F32(cam_data + 0x00) = eye_x;
+    F32(cam_data + 0x04) = eye_y;
+    F32(cam_data + 0x08) = eye_z;
+    F32(cam_data + 0x0C) = pitch;
+    F32(cam_data + 0x10) = yaw;
+    F32(cam_data + 0x28) = look_x;
+    F32(cam_data + 0x2C) = look_y;
+    F32(cam_data + 0x30) = look_z;
+
+    F32(0x8015D6D8u + (unsigned int)idx * 4u) = eye_x;
+    F32(0x801B0CE8u + (unsigned int)idx * 4u) = eye_y;
+    F32(0x80178FB0u + (unsigned int)idx * 4u) = eye_z;
+    F32(0x80158748u + (unsigned int)idx * 4u) = look_x;
+    F32(0x8015D268u + (unsigned int)idx * 4u) = look_y;
+    F32(0x801C3808u + (unsigned int)idx * 4u) = look_z;
+}
+
 // Menu input for player k (called at the start of its update); then hides the pad from it.
 static void lm_player_begin(unsigned int p, int k) {
     lm_suppressed = -1;
     unsigned int bn = BTN_NEW_P1 + (unsigned int)k * 2;
     unsigned int raw = RAW_PADS + (unsigned int)k * 8;
-    if (!lm_open[k]) return;
+    if (!lm_open[k]) {
+        fps_player_input(p, k);
+        return;
+    }
+    fps_held[k] = 0;
     if (!coop_active() || !live_menu_on()) { lm_open[k] = 0; return; }
     unsigned short b = U16(bn);
     int sy = S8(raw + 3);
@@ -451,6 +774,9 @@ static void lm_player_end(void) {
     U16(BTN_NEW_P1 + (unsigned int)k * 2) = lm_saved_btn;
     U32(RAW_PADS + (unsigned int)k * 8) = lm_saved_raw0;
     U32(RAW_PADS + (unsigned int)k * 8 + 4) = lm_saved_raw1;
+    if (fps_held[k]) {
+        fps_apply_aim(k ? SLOT1_DATA : SLOT0_DATA, k);
+    }
     lm_suppressed = -1;
 }
 
@@ -628,6 +954,8 @@ RECOMP_HOOK("func_8004C438") void coop_stage_load(void) {
     for (int i = 0; i < 8; i++) mg_obj[i] = 0;   // objects are rebuilt on each load
     spawn_guard = 90;
     spawn_guard_dist = -1.0f;
+    fps_held[0] = fps_held[1] = 0;
+    fps_cam_saved[0] = fps_cam_saved[1] = 0;
     lm_close_all();
     if (U8(MODE) & 1) {
         U8(PLAYERS) = 1;

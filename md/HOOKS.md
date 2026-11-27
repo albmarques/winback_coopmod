@@ -396,6 +396,7 @@ Lista completa dos símbolos em [winback.us.syms.toml](file:///C:/Users/Alberto/
 | `func_80027470` | `0x80027470` | `0x168` | Alocador de objetos/tarefas |
 | `func_800337A8` | `0x800337A8` | `0xBC0` | Update de IA/visibilidade de inimigos |
 | `func_80034364` | `0x80034364` | `0x1A0` | Setup do spawner de inimigos |
+| `func_80034DBC` | `0x80034DBC` | `0x3C4` | Update da câmera de gameplay de cada jogador (`Eye`, `LookAt`, colisão e luzes) |
 | `func_8003A054` | `0x8003A054` | `0x388` | Lock-on inicial da câmera ao apertar Y / C-Down |
 | `func_8003A6EC` | `0x8003A6EC` | `0x2A4` | Troca/ciclo de alvo de lock-on da câmera |
 | `func_8003C58C` | `0x8003C58C` | `0x5F4` | Rastreamento de sala/subsala do jogador |
@@ -408,6 +409,7 @@ Lista completa dos símbolos em [winback.us.syms.toml](file:///C:/Users/Alberto/
 | `func_8004D66C` | `0x8004D66C` | `0x50` | Auxiliar de carga de modelo |
 | `func_8004D6E8` | `0x8004D6E8` | `0x17C` | Descompactação de modelo para RAM |
 | `func_8004DE48` | `0x8004DE48` | `0x10C` | Push na fila de eventos (`a0=type, a3=obj`) |
+| `func_80052600` | `0x80052600` | `0x524` | Pré-processamento dos ângulos de mira livre (`+0x0154`, `+0x0158`) antes da rotação dos alvos de IK das mãos (`func_80055F6C`) |
 | `func_80053BB4` | `0x80053BB4` | `0x200` | Auxiliar de personagens/objetos |
 | `func_80057100` | `0x80057100` | `0xAB4` | Renderização de personagem humano |
 | `func_80057BB4` | `0x80057BB4` | `0x2C0` | Aplicação de dano em personagem |
@@ -558,3 +560,38 @@ Histórico: v0.3.8 usou `func_800B8FB0` e v0.3.10 usou `func_800BABFC` (não peg
 |---|---|---|
 | `func_8007A238` (0x48) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` | Desenho do fade de tela cheia. Perto de uma escada/mureta no co-op, esconde o nível dele (0) e desenha o fade só na vista de quem está na escada; restaura no retorno. |
 | `func_80025F10` | (ganchos existentes) | Mantém `D_8010AF14` em no máximo 0x80 durante o desenho, para as duas vistas não perderem o 3D no fade. |
+
+## Modo em Primeira Pessoa Alternável / Toggle (D-pad Cima)
+
+| Função | Tipo | Uso |
+|---|---|---|
+| `func_80059E5C` (`0xC9C`) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` (`fps_player_input` via `lm_player_begin` / `lm_player_end`) | Detecta o clique (borda de subida) no **D-pad Cima** (`0x0800` / `WB_PAD_DU`) para **habilitar/desabilitar (toggle)** o modo em 1ª pessoa (`fps_held[k] ^= 1`). Enquanto habilitado, injeta `R` (`0x0010`) em `RAW_PADS` para manter o personagem parado na postura de mira (`action 2 -> 3`, braços, arma 3D e laser levantados), zera apenas os eixos X/Y do analógico em `RAW_PADS` (evitando caminhada ou esquiva lateral `func_8005D680`) e preserva os botões `A`/`Z` (tiro), `B` (recarregar) e `C-Up` (trocar de arma). |
+| `func_80052600` (`0x524`) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` (`coop_fps_ik_begin` / `coop_fps_ik_end`) | `func_80052600(player)` é chamada em `0x80055FB0` dentro de `func_80055F6C(player)` (`0x80055F6C..0x80056C40`), imediatamente antes de `0x80055FC8..0x80056B90` rotacionar os alvos de Inverse Kinematics (IK) do Peito (`+0x0F38`), Cabeça (`+0x0F44`), Mão Esquerda (`+0x0F50`) e Mão Direita (`+0x0F5C`) por `+0x0064`, `+0x0158` e `+0x0154`. Ao aplicar `fps_apply_aim` no retorno de `func_80052600`, os alvos de IK das duas mãos e todas as 15 matrizes de ossos em `func_80069D44` (`0x8005A4BC`) seguem exatamente `(fps_yaw[k], fps_pitch[k])`. |
+| `func_80057100` (`0xAB4`) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` (`coop_fps_draw_begin` / `coop_fps_draw_end`) | No viewport do próprio jogador em 1ª pessoa (`player == PLAYER_PTRS[vp]`), substitui temporariamente por `0xFFFFFFFF` **todas** as entradas da tabela de Display Lists `U32(player + 0x1744)` exceto `idx 10, 11` (antebraço e mão esquerdos) e `idx 13, 14` (antebraço e mão direitos + arma 3D), e define `U8(player + 0x1768) = 3` (LOD 3, pula as juntas dinâmicas `func_8006C68C`/`func_8006EF90`), restaurando no retorno. Os braços superiores (`idx 9, 12`) começam colados na câmera e apareciam como placas enormes nos cantos inferiores da tela; pelve/pernas também cortavam ao olhar para baixo. O `Eye` fica em `ShoulderMid + up * 16 - fwd * 4`. |
+| `func_80034DBC` (`0x3C4`) | `RECOMP_HOOK` / `RECOMP_HOOK_RETURN` (`coop_fps_cam_begin` / `coop_fps_cam_end`) | Salva o estado da câmera de 3ª pessoa e ancora o `Eye` no referencial rotacionado do ponto médio entre os ombros esquerdo (`Osso 10`, `+0x0CE0..+0x0CE8`) e direito (`Osso 13`, `+0x0D04..+0x0D0C`): `Eye = ShoulderMid + up * 8.0f - fwd * 6.0f`, mantendo os braços, mãos e arma 3D fixos no enquadramento de viewmodel FPS em qualquer ângulo de pitch e yaw. Ao apertar D-pad Cima novamente, desativa a 1ª pessoa e restaura a câmera de 3ª pessoa. |
+
+### Achados de Engenharia Reversa na `baserom.us.z64` para o Modo 1ª Pessoa
+
+1. **Onde a Arma 3D Realmente é Desenhada (`func_80057100` vs. Osso 15):**
+   - Em `func_80057100`, o bloco `0x80057250..0x800573FC` (`func_8006ADC4` + matriz em `player + 0x13B8`) desenha apenas a **arma secundária guardada nas costas** (ex.: escopeta/submetralhadora pendurada no torso quando `player->0xF4 & 0x4000` está ativo), e **não** a arma empunhada na mão!
+   - A **arma 3D empunhada na mão direita** faz parte da Display List do **Osso 15 (`idx 14` da tabela `U32(player + 0x1744)`)**, cuja Display List é selecionada/atualizada por `func_8006A8E0` conforme a arma equipada (`U8(player + 0x1758)`).
+   - Por isso, ligar o bit `0x100` em `U32(player + 0x00F4)` (`0x80057520: bne $t9, $zero, 0x800577D4`) pula o loop inteiro dos 15 ossos (`0x80057608..0x80057784`) e faz **tanto os braços quanto a arma 3D desaparecerem**.
+   - **Mapeamento exato dos 15 ossos em `func_80069D44`, `player + 0x0C68 + bone_idx * 12` (posições mundiais) e `U32(player + 0x1744)`:**
+     - `idx 0` (Osso 1, matriz `+0x13F8`, pos `+0x0C74`): Pelve / Quadril
+     - `idx 1..3` (Ossos 2..4, `+0x1428..+0x1488`, pos `+0x0C80..+0x0C98`): Coxa, Canela e Pé Esquerdo
+     - `idx 4..6` (Ossos 5..7, `+0x14B8..+0x1518`, pos `+0x0CA4..+0x0CBC`): Coxa, Canela e Pé Direito
+     - **`idx 7` (Osso 8, `+0x1548`, pos mundial em `+0x0CC8..+0x0CD0`):** Torso Superior / Peito
+     - **`idx 8` (Osso 9, `+0x1578`, pos mundial em `+0x0CD4..+0x0CDC`):** Cabeça (`0x07000000`)
+     - **`idx 9..11` (Ossos 10..12, `+0x15A8..+0x1608`, pos ombro esq. em `+0x0CE0..+0x0CE8`, mão esq. em `+0x0CF8..+0x0D00`):** Braço, Antebraço e Mão Esquerda
+     - **`idx 12..14` (Ossos 13..15, `+0x1638..+0x1698`, pos ombro dir. em `+0x0D04..+0x0D0C`, mão dir. em `+0x0D1C..+0x0D24`):** Braço, Antebraço e Mão Direita + **Arma 3D**
+
+2. **Como o Solver de Inverse Kinematics (IK) dos Braços (`func_80055F6C` $\rightarrow$ `func_8006A508`) Segue a Mira:**
+   - Em `func_800532CC` (`0x8005A4B4`), `func_80068480` calcula os alvos de IK das mãos (`+0x0F50` Mão Esquerda e `+0x0F5C` Mão Direita) no espaço local não-rotacionado da animação.
+   - Em seguida (`0x8005370C`), `func_80054178` chama **`func_80055F6C(player)`** (`0x80055F6C..0x80056C40`), que:
+     1. Chama **`func_80052600(player)`** em `0x80055FB0`;
+     2. Se `+0x0158 == 0` e `+0x0154 == 0` (`0x80056048..0x80056078`), pula a rotação de mira; caso contrário, rotaciona os alvos de IK `+0x0F38` (Peito), `+0x0F44` (Cabeça), `+0x0F50` (Mão Esquerda) e `+0x0F5C` (Mão Direita) usando `F32(player + 0x0064)`, `F32(player + 0x0158)` e `F32(player + 0x0154)`.
+   - Logo depois (`0x8005A4BC`), `func_80069D44` chama `func_8006A508`, que usa `func_8004B868`, `func_8004B19C` e `func_8004B0B8` para apontar os braços e antebraços diretamente para os alvos de IK `+0x0F50` e `+0x0F5C`!
+   - **Sinal e Divisão de Pitch (`0x8006A230: div.s` e `0x8006A760: sub.d`):**
+     - Em `func_80055F6C` (`0x800560B0`, `0x800567D8`) e `func_80069D44` (`0x8006A230`, `0x8006A760`), a instrução `0x46166303` é **`div.s $f12, $f12, $f22`** (divide `+0x0154` por `2.5f` no Torso Osso 8 para pistola `weapon_class == 0`), enquanto os ombros (Ossos 10 e 13) recebem o restante `+0x0154 - (+0x0154 / 2.5) = 0.6 * (+0x0154)`, totalizando **`1.0 * (+0x0154)`** para todas as armas.
+     - O sinal de `rotateX` (`func_8004AAD4`) e de `func_800D3C2C` (`0x800D3F84: 0.0 - atan2f(dy, dist_xz)`) define **`+0x0154 < 0` para mirar para cima** e **`+0x0154 > 0` para mirar para baixo** (`F32(player + 0x0154) = -fps_pitch[k]`).
+     - Além disso, `func_800588FC` (`0x80058DEC`) e `func_8005DC88` (`0x8005E0D0`) copiam `F32(player + 0x0110)` sobre `F32(player + 0x0064)` quando o analógico está em zero; por isso `fps_apply_aim` atualiza tanto `+0x0064` quanto `+0x0110 = fps_yaw[k]`, e o hook `RECOMP_HOOK_RETURN("func_80052600")` garante que `+0x0064`, `+0x0110`, `+0x0158 = 0` e `+0x0154 = -fps_pitch[k]` sejam aplicados no instante exato antes de `func_80055F6C` rotacionar os alvos de IK dos braços.

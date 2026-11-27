@@ -859,20 +859,26 @@ Em **`func_80069D44`** (cálculo de animação e cinemática direta) e **`func_8
    - **Tabela de Display Lists dos 15 Ossos (`U32(player + 0x1744)`):**
      - Aponta para um array de 15 `u32` (offsets de Display List no segmento `0x04`). Se a entrada `b - 1` for `0xFFFFFFFF` (`-1`, checado em `0x80057638`), o osso não é desenhado.
 
-2. **Duas Estratégias de Ocultação Seletiva por Viewport (`vp = U8(0x8016A40F)`):**
+2. **Ocultação Seletiva por Viewport (`vp = U8(0x8016A40F)`) — Descoberta Crítica sobre `+0xF4 & 0x100` vs. Osso 15:**
    Como `func_80025F10` desenha um viewport por vez (`vp = 0` para P1 no topo, `vp = 1` para P2 embaixo), qualquer ocultação feita em `func_80057100` quando `player == PLAYER_PTRS[vp]` afeta **exclusivamente a câmera de 1ª pessoa do próprio jogador**, mantendo o corpo inteiro visível na tela do parceiro no Co-op!
 
-   - **Estratégia 1 — Ocultar Corpo + Juntas (`+0xF4 |= 0x100`), Mantendo Arma 3D, Mira Laser e Sombra (Mais Limpa e Zero Artefatos):**
-     - A ordem de execução dentro de `func_80057100` é:
-       1. `0x800571F0..0x80057210`: Desenha a sombra no chão (`func_80056C58`, `func_800AA760`).
-       2. `0x80057214..0x800573FC`: Se `player->0xF4 & 0x4000` (arma sacada / mirando) e `!(player->0xF8 & 0x400)` (não é C4), chama `func_8006ADC4` e **desenha o modelo 3D da arma na mão e o feixe da mira laser**!
-       3. `0x80057520..0x80057530`: Testa `if (U32(player + 0xF4) & 0x20000100) goto 0x800577D4`, pulando o loop dos 15 ossos do corpo (`0x80057608..0x80057788`) e o desenho das juntas dinâmicas (`func_8006C68C` / `func_8006EF90` em `0x800577C4`).
-     - Portanto, basta um `RECOMP_HOOK("func_80057100")` que ligue temporariamente `U32(player + 0xF4) |= 0x100` apenas quando `player == PLAYER_PTRS[U8(0x8016A40F)]` (e limpe o bit no `RECOMP_HOOK_RETURN`): o jogador vê sua arma 3D e o laser em 1ª pessoa ao mirar, sem nenhum polígono da cabeça ou ombro entrando na frente da lente!
+   - **Por que NÃO usar `player->0xF4 |= 0x100`:**
+     - Em `func_80057100`, o bloco `0x80057250..0x800573FC` (`func_8006ADC4` + matriz `player + 0x13B8`) desenha apenas a **arma secundária guardada nas costas** (quando `player->0xF4 & 0x4000` está ativo), e **não** a arma empunhada na mão!
+     - A **arma 3D empunhada pelo jogador** faz parte da Display List do **Osso 15 (`idx 14` da tabela `U32(player + 0x1744)`)**, atualizada por `func_8006A8E0`.
+     - Portanto, ligar `0x100` em `player + 0xF4` faz o branch em `0x80057520` pular todos os 15 ossos (`0x80057608..0x80057784`), ocultando também os braços e a arma 3D!
 
-   - **Estratégia 2 — Viewmodel Completo com Braços e Pernas Visíveis (Ocultando Apenas Cabeça/Tronco e Juntas Superiores):**
-     - Se quisermos ver também os braços segurando a arma e as pernas ao olhar para baixo:
-       - Se colocarmos `-1` (`0xFFFFFFFF`) apenas nos ossos da cabeça/peito (`ossos 7, 8, 9`) na tabela `U32(player + 0x1744)`, a função de *skinning* de juntas dinâmicas do LOD 1 (`func_8006C68C`, chamada em `0x800577C4` quando `U8(player + 0x1768) == 1`) ainda desenharia os triângulos do pescoço e ombros.
-       - Porém, em `0x800577A0..0x800577D0`, se `U8(player + 0x1768)` (LOD) for temporariamente alterado para `3` durante o desenho do dono do viewport, `func_80057100` **pula `func_8006C68C` e `func_8006EF90`** (as malhas de junção do pescoço/tronco), desenhando unicamente os ossos permitidos na tabela `+0x1744` (braços, mãos, arma e pernas)!
+   - **Solução Verificada — Ocultar Apenas Osso 8 (`idx 7`, Torso Superior), Osso 9 (`idx 8`, Cabeça) e Juntas Dinâmicas (`LOD = 3`):**
+     - Layout dos 15 ossos na tabela `U32(player + 0x1744)` (ex.: `0x8010779C` p/ Jean-Luc LOD 1, `0x80108DE0` p/ Engineer LOD 1):
+       - `idx 0` (Osso 1, `+0x13F8`): Pelve
+       - `idx 1..3` (Ossos 2..4, `+0x1428..+0x1488`): Perna Esquerda (coxa, canela, pé)
+       - `idx 4..6` (Ossos 5..7, `+0x14B8..+0x1518`): Perna Direita (coxa, canela, pé)
+       - **`idx 7` (Osso 8, `+0x1548`, pos mundial em `+0x0CC8..+0x0CD0`):** Torso Superior / Peito
+       - **`idx 8` (Osso 9, `+0x1578`, pos mundial em `+0x0CD4..+0x0CDC`):** Cabeça (`0x07000000`)
+       - **`idx 9..11` (Ossos 10..12, `+0x15A8..+0x1608`):** Braço, Antebraço e Mão Esquerda
+       - **`idx 12..14` (Ossos 13..15, `+0x1638..+0x1698`):** Braço, Antebraço e Mão Direita + **Arma 3D**
+     - No loop de `func_80057100` (`0x80057634..0x8005763C`), se `U32(tbl + idx * 4) == 0xFFFFFFFF`, aquele osso é pulado. E em `0x8005779C..0x800577C0`, se `U8(player + 0x1768)` (LOD) for temporariamente `3`, `func_80057100` pula `func_8006C68C` e `func_8006EF90` (as malhas dinâmicas de junção do pescoço e ombros).
+     - Assim, substituindo temporariamente `tbl[7]` e `tbl[8]` por `0xFFFFFFFF` e `U8(player + 0x1768) = 3` durante `func_80057100` (e restaurando no `RECOMP_HOOK_RETURN`), a cabeça, o peito e o pescoço somem sem obstruir a câmera, enquanto **ambos os braços, mãos, a arma 3D (`idx 9..14`), a mira laser 3D (`func_800A25E0`) e as pernas (`idx 0..6`)** são renderizados perfeitamente!
+     - Além disso, recuando o `Eye` ligeiramente em relação ao centro da cabeça (`hx - fwd * 6.0f`, `hy + 5.0f`, `hz - fwd * 6.0f`), o plano `near = 10.0f` fica logo à frente da cabeça oculta e **não corta** os braços levantados nem a arma.
 
 ---
 
@@ -1196,3 +1202,19 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Relato:** na sala depois dessa porta, quando a caixa de bomba explode, o P1 começa a perder vida aos poucos e o P2 não.
 - **Ainda sem causa:** nenhum dos lugares do código que mexem na vida (`+0x176B`) com o ponteiro do jogador 1 (`D_801390C0[0]`) parece um dano contínuo; falta saber quem tira a vida.
 - **Diagnóstico novo:** a cada queda de vida de um jogador, `coop: lad hp_drop <jogador> <vida antes> <vida depois> <ação> <sala> <marcador> <flags da zona> <+0xF4>` e, para cada personagem a até 800 unidades, `coop: lad hp_near <objeto> <update> <draw> <tipo> <vida> <distância>`.
+
+## Passo 63: Modo em Primeira Pessoa Alternável (Toggle no D-pad Cima) com Braços Seguindo a Mira (IK)
+
+- **Funcionalidade:** apertar **D-pad Cima** (`0x0800` / `WB_PAD_DU`) durante o gameplay **habilita ou desabilita (toggle)** o modo em **Primeira Pessoa (FPS)** para aquele jogador (não é necessário manter segurado). Enquanto ativo, o jogador permanece na postura de mira com os braços, mãos, arma 3D e mira laser 3D acompanhando 1:1 a rotação horizontal e vertical da câmera (estilo viewmodel de FPS), podendo atirar (`A` / `Z`), recarregar (`B`) e trocar de arma (`C-Cima`). Apertar D-pad Cima novamente retorna à câmera de 3ª pessoa.
+- **Engenharia reversa na `baserom.us.z64` e soluções aplicadas em `src/coop.c`:**
+  1. **Renderização dos Braços e da Arma 3D (`coop_fps_draw_begin/end` em `func_80057100`):**
+     - A arma 3D empunhada na mão faz parte da Display List do **Osso 15 (`idx 14` de `U32(player + 0x1744)`)**, enquanto `0x80057250..0x800573FC` desenha apenas a arma secundária pendurada nas costas.
+     - O hook oculta apenas o **Osso 8 (Torso Superior, `idx 7`)** e o **Osso 9 (Cabeça, `idx 8`)** gravando `0xFFFFFFFF` em `tbl[7]` e `tbl[8]`, e força temporariamente `U8(player + 0x1768) = 3` (LOD 3, pulando o *skinning* dinâmico de pescoço/ombros `func_8006C68C`/`func_8006EF90`).
+  2. **Por que os Braços Não Seguiam a Mira Antes e Como o Solver de IK (`func_80055F6C` $\rightarrow$ `func_80069D44`) Funciona:**
+     - Em `func_800532CC` (`0x8005A4B4`), `func_80068480` gera os alvos de Inverse Kinematics (IK) das mãos (`+0x0F50` Mão Esquerda e `+0x0F5C` Mão Direita) sem rotação de mira. Logo em seguida (`0x8005370C` $\rightarrow$ `func_80054178` $\rightarrow$ `func_80055F6C`), o jogo chama **`func_80052600(player)`** (`0x80055FB0`) e, imediatamente no retorno (`0x80055FC8..0x80056B90`), rotaciona `+0x0F38`, `+0x0F44`, `+0x0F50` e `+0x0F5C` por `F32(player + 0x0064)`, `F32(player + 0x0158)` e `F32(player + 0x0154)` antes de `func_80069D44` (`0x8005A4BC`) apontar os braços (`func_8006A508`) para `+0x0F50` e `+0x0F5C`.
+     - Além disso, quando o analógico está zerado, `func_800588FC` (`0x80058DEC`) e `func_8005DC88` (`0x8005E0D0`) sobrescrevem `F32(player + 0x0064)` com `F32(player + 0x0110)` (yaw salvo), e o auto-aim (`func_80058438` + `func_800D4414` em `0x8005EC2C..0x8005EC5C`) sobrescrevia `+0x0154` e `+0x0158` antes de `func_80055F6C` rodar!
+     - Em `0x8006A230` (`0x46166303 = div.s $f12, $f12, $f22`) e `0x8006A760` (`+0x0154 - (+0x0154 / 2.5)`), a soma da inclinação vertical do Torso (`0.4`) + Ombros (`0.6`) é sempre **`1.0 * (+0x0154)`** para qualquer arma, e o sinal de `rotateX` / `func_800D3C2C` (`0x800D3F84`) usa **`+0x0154 = -fps_pitch[k]`** (negativo para mirar para cima, positivo para mirar para baixo).
+     - **Solução (`coop_fps_ik_begin/end` em `func_80052600`):** o hook no retorno de `func_80052600` aplica `F32(p + 0x0064) = fps_yaw[k]`, `F32(p + 0x0110) = fps_yaw[k]`, `F32(p + 0x0158) = 0.0f` e `F32(p + 0x0154) = -fps_pitch[k]` no ponto exato antes de `func_80055F6C` rotacionar os alvos de IK das mãos e de `func_80069D44` montar as 15 matrizes dos ossos.
+  3. **Ancoragem do `Eye` no Referencial Rotacionado dos Ombros (`coop_fps_cam_end` em `func_80034DBC`):**
+     - `func_80069D44` grava a posição mundial de todos os 15 ossos em `player + 0x0C68 + bone_idx * 12`, onde o Ombro Esquerdo (Osso 10) fica em `+0x0CE0..+0x0CE8` e o Ombro Direito (Osso 13) em `+0x0D04..+0x0D0C`.
+     - Como os braços pivotam ao redor da linha dos ombros na direção `fwd`, posicionar `Eye = ShoulderMid + up * 8.0f - fwd * 6.0f` faz a câmera orbitar junto com o pivô dos ombros ao olhar para cima ou para baixo, mantendo os braços, as mãos e a arma 3D fixos no enquadramento da tela como em um FPS nativo.
