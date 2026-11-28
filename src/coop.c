@@ -429,7 +429,7 @@ RECOMP_HOOK_RETURN("func_80052600") void coop_fps_ik_end(void) {
 }
 
 static int fps_can_activate(unsigned int p, int k) {
-    if (recomp_get_config_u32("first_person") != 1) return 0;
+    if (recomp_get_config_u32("first_person") != 0) return 0;
     if (!(U8(MODE) & 1) || !(U16(STATE) & 1) || in_cutscene) return 0;
     if (U8(CUTSCENE_FLAG) != 0 || U8(CUTSCENE_CAM) != 0) return 0;
     if (lm_open[k] || S8(p + 0x176B) <= 0) return 0;
@@ -453,7 +453,7 @@ static void fps_player_input(unsigned int p, int k) {
     fps_du_prev[k] = du_now;
 
     if (!fps_can_activate(p, k)) {
-        if (fps_held[k] && (S8(p + 0x176B) <= 0 || recomp_get_config_u32("first_person") != 1)) {
+        if (fps_held[k] && (S8(p + 0x176B) <= 0 || recomp_get_config_u32("first_person") != 0)) {
             fps_held[k] = 0;
             F32(p + 0x0154) = 0.0f;
             F32(p + 0x0158) = 0.0f;
@@ -540,10 +540,61 @@ static void fps_player_input(unsigned int p, int k) {
     lm_suppressed = k;
 }
 
-// Viewmodel FPS: in the player's own viewport, hide every bone except the forearms and hands
-// (bones 11, 12, 14, 15 = idx 10, 11, 13, 14; idx 14 carries the 3D weapon), and skip the dynamic joint
-// skinning (LOD = 3). The upper arms (idx 9, 12) were filling the bottom corners of the screen as huge
-// slabs because they start right next to the camera; the legs/pelvis also clipped when looking down.
+// Viewmodel FPS: in the player's own viewport, hide the legs/pelvis, torso, head, and upper arms
+// (keeping only the forearms and hands: bones 11, 12, 14, 15 = idx 10, 11, 13, 14, where idx 14 carries the 3D weapon),
+// skip the full-body dynamic joint pass (LOD = 3), and in coop_fps_draw_end emit the dynamic elbow joints
+// (8triangles per elbow from D_801DC710 + slot * 0xBF0 + 0x0408 / + 0x0508, already skinned by func_8006E8B4)
+// so the forearms connect smoothly without the open hollow boundary at the elbow!
+static void fps_copy_elbow_vtx(unsigned int src, unsigned int dst) {
+    for (unsigned int i = 0; i < 16u; i++) {
+        unsigned int s = src + i * 12u;
+        unsigned int d = dst + i * 16u;
+        U16(d + 0x00) = U16(s + 0x00); // x
+        U16(d + 0x02) = U16(s + 0x02); // y
+        U16(d + 0x04) = U16(s + 0x04); // z
+        U16(d + 0x06) = 0;             // flag
+        U16(d + 0x08) = 0;             // s
+        U16(d + 0x0A) = 0;             // t
+        U8(d + 0x0C)  = U8(s + 0x08);  // nx
+        U8(d + 0x0D)  = U8(s + 0x09);  // ny
+        U8(d + 0x0E)  = U8(s + 0x0A);  // nz
+        U8(d + 0x0F)  = U8(s + 0x0B);  // a
+    }
+}
+
+static void fps_emit_dynamic_elbows(unsigned int player) {
+    int slot = S8(player + 0x179B);
+    if (slot < 0 || slot >= 16) return;
+    unsigned int base = 0x801DC710u + (unsigned int)slot * 0x0BF0u;
+    // Copy dynamic elbow vertices (computed by func_8006E8B4 / func_8006EC50 / func_8006EDF0) into the 16-byte Vtx buffers
+    fps_copy_elbow_vtx(base + 0x0A08u, base + 0x0408u); // Right elbow (connects bone 13 -> bone 14)
+    fps_copy_elbow_vtx(base + 0x0AC8u, base + 0x0508u); // Left elbow  (connects bone 10 -> bone 11)
+
+    unsigned int dl = U32(0x801D2C80u);
+    if (dl < 0x80000000u || dl >= 0x80800000u) return;
+
+    // Set world identity matrix (0x80104528) and shaded primitive/texture state matching func_8006EF90 (0x80071588..0x80071834)
+    U32(dl + 0x00) = 0xDA380003u; U32(dl + 0x04) = 0x80104528u; // gSPMatrix(0x80104528, G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_PUSH)
+    U32(dl + 0x08) = 0xE7000000u; U32(dl + 0x0C) = 0x00000000u; // gDPPipeSync()
+    // Right elbow (16 vertices at base + 0x0408, 8 triangles bridging upper arm and forearm)
+    U32(dl + 0x10) = 0x01010020u; U32(dl + 0x14) = base + 0x0408u;
+    U32(dl + 0x18) = 0x06000204u; U32(dl + 0x1C) = 0x00000406u;
+    U32(dl + 0x20) = 0x06080A0Cu; U32(dl + 0x24) = 0x00080C0Eu;
+    U32(dl + 0x28) = 0x06101214u; U32(dl + 0x2C) = 0x00101416u;
+    U32(dl + 0x30) = 0x06181A1Cu; U32(dl + 0x34) = 0x00181C1Eu;
+    // Left elbow (16 vertices at base + 0x0508, 8 triangles bridging upper arm and forearm)
+    U32(dl + 0x38) = 0x01010020u; U32(dl + 0x3C) = base + 0x0508u;
+    U32(dl + 0x40) = 0x06000204u; U32(dl + 0x44) = 0x00000406u;
+    U32(dl + 0x48) = 0x06080A0Cu; U32(dl + 0x4C) = 0x00080C0Eu;
+    U32(dl + 0x50) = 0x06101214u; U32(dl + 0x54) = 0x00101416u;
+    U32(dl + 0x58) = 0x06181A1Cu; U32(dl + 0x5C) = 0x00181C1Eu;
+    // Restore state matching the end of func_8006EF90 (0x800718A0..0x800718F8)
+    U32(dl + 0x60) = 0xE7000000u; U32(dl + 0x64) = 0x00000000u; // gDPPipeSync()
+    U32(dl + 0x68) = 0xFC127FFFu; U32(dl + 0x6C) = 0xFFFFF238u; // gDPSetCombineMode(G_CC_MODULATEIDECALA, G_CC_MODULATEIDECALA)
+    U32(dl + 0x70) = 0xE3001001u; U32(dl + 0x74) = 0x00000000u; // gDPSetTextureLUT(G_TT_NONE)
+    U32(0x801D2C80u) = dl + 0x78u;
+}
+
 RECOMP_HOOK("func_80057100") void coop_fps_draw_begin(unsigned int obj) {
     fps_hidden_player = 0;
     fps_hidden_tbl = 0;
@@ -571,10 +622,12 @@ RECOMP_HOOK("func_80057100") void coop_fps_draw_begin(unsigned int obj) {
 
 RECOMP_HOOK_RETURN("func_80057100") void coop_fps_draw_end(void) {
     if (fps_hidden_player != 0 && fps_hidden_tbl != 0) {
+        unsigned int player = fps_hidden_player;
         for (unsigned int i = 0; i < 15u; i++) U32(fps_hidden_tbl + i * 4u) = fps_saved_bones[i];
-        U8(fps_hidden_player + 0x1768) = fps_saved_lod;
+        U8(player + 0x1768) = fps_saved_lod;
         fps_hidden_player = 0;
         fps_hidden_tbl = 0;
+        fps_emit_dynamic_elbows(player);
     }
 }
 
@@ -663,11 +716,15 @@ RECOMP_HOOK_RETURN("func_80034DBC") void coop_fps_cam_end(void) {
         sz_pos = F32(player + 0x08);
     }
 
-    // Eye height ~ eyes above the shoulder line (rotated with the aim) so the forearms/hands/gun sit in the
-    // lower-center of the screen instead of filling it.
-    float eye_x = sx_pos + up_x * 16.0f - fwd_x * 4.0f;
-    float eye_y = sy_pos + up_y * 16.0f - fwd_y * 4.0f;
-    float eye_z = sz_pos + up_z * 16.0f - fwd_z * 4.0f;
+    // Eye positioned slightly higher (+19 up) and slightly forward (+2 fwd) relative to the shoulder midpoint,
+    // plus a small right shift (+2.5 right) toward the dominant weapon arm, so the open back ends of the
+    // forearms fall below the bottom edge of the frustum while the wrists, hands, 3D gun, and laser sight
+    // sit naturally in the lower-center/right of the screen like a dedicated FPS viewmodel.
+    float right_x = -cos_y;
+    float right_z = sin_y;
+    float eye_x = sx_pos + up_x * 19.0f + fwd_x * 2.0f + right_x * 2.5f;
+    float eye_y = sy_pos + up_y * 19.0f + fwd_y * 2.0f;
+    float eye_z = sz_pos + up_z * 19.0f + fwd_z * 2.0f + right_z * 2.5f;
     float look_x = eye_x + fwd_x * 400.0f;
     float look_y = eye_y + fwd_y * 400.0f;
     float look_z = eye_z + fwd_z * 400.0f;
@@ -680,6 +737,31 @@ RECOMP_HOOK_RETURN("func_80034DBC") void coop_fps_cam_end(void) {
     F32(cam_data + 0x28) = look_x;
     F32(cam_data + 0x2C) = look_y;
     F32(cam_data + 0x30) = look_z;
+
+    // Also update the camera 3x3 rotation matrix at cam_data + 0x44 and the directional lighting vector
+    // (0x80103770/72 for P1, 0x80103788/8A for P2) as func_80034DBC does at 0x8003504C..0x80035164,
+    // so the 3D laser beam billboarding (func_800A2890) and arm shading match the 1st-person view direction.
+    F32(cam_data + 0x44) = cos_y;
+    F32(cam_data + 0x48) = 0.0f;
+    F32(cam_data + 0x4C) = -sin_y;
+    F32(cam_data + 0x50) = sin_y * sin_p;
+    F32(cam_data + 0x54) = cos_p;
+    F32(cam_data + 0x58) = cos_y * sin_p;
+    F32(cam_data + 0x5C) = fwd_x;
+    F32(cam_data + 0x60) = -sin_p;
+    F32(cam_data + 0x64) = fwd_z;
+
+    int lx = (int)(-sin_y * 127.0f);
+    int lz = (int)(-cos_y * 127.0f);
+    if (lx < -127) lx = -127; else if (lx > 127) lx = 127;
+    if (lz < -127) lz = -127; else if (lz > 127) lz = 127;
+    if (S16(player + 0x90) == 0) {
+        S8(0x80103770u) = (signed char)lx;
+        S8(0x80103772u) = (signed char)lz;
+    } else {
+        S8(0x80103788u) = (signed char)lx;
+        S8(0x8010378Au) = (signed char)lz;
+    }
 
     F32(0x8015D6D8u + (unsigned int)idx * 4u) = eye_x;
     F32(0x801B0CE8u + (unsigned int)idx * 4u) = eye_y;
