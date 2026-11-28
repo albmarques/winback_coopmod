@@ -1269,3 +1269,18 @@ if (U16(0x8010AC4A) == 0 && !in_cutscene && cam_mode != 9 && fps_should_override
 - **Causa:** as checagens novas em `fps_can_activate` (`SCRIPT_FLAGS & 0x10`, `U8(p + 0x18CE)`, `U8(0x8010EDE5)`, `STATE & 0x08`) não são exclusivas de cutscene. Na ROM (mapeamento correto `rom = vram - 0x80025C00 + 0x1000`), `+0x18CE` é escrito fora dos scripts (ex.: `0x8002C8EC`, `0x80053D70`) e `0x8010E0F4` é escrito por vários scripts de fase (`0x80099160`, `0x8009B910`...) que podem deixar o bit 0x10 ligado durante o gameplay. Com qualquer um deles ligado, `fps_can_activate` devolvia 0 sempre e o D-pad Cima era ignorado.
 - **Correção:** `fps_can_activate` voltou a usar só `MODE & 1`, `STATE & 1`, `in_cutscene`, `CUTSCENE_FLAG`, `CUTSCENE_CAM` (como antes), mais a lista de ações (sem a 18). A proteção de cutscene fica por conta dessas flags e do `fps_suspend_for_cutscene()` em `func_8009E1E0`. Também saiu a checagem `STATE & 0x0800` de `fps_emit_dynamic_elbows`.
 - **Atenção:** as análises antigas que usavam `rom = vram - 0x7FFFF400` estão erradas; o código principal começa em `rom 0x1000 = vram 0x80025C00` (ver `winback.us.syms.toml`).
+
+### Passo 63d: 1ª pessoa não volta depois da cutscene
+
+- **Relato:** depois de uma cutscene a 1ª pessoa para de funcionar.
+- **Causa provável:** `fps_can_activate` exigia `in_cutscene == 0`. Essa variável é controle do próprio mod e, depois de algumas cenas, só é zerada pela trava de segurança (`STATE & 1`, `CUTSCENE_FLAG == 0`, `CUTSCENE_CAM == 0` e `SCRIPT_FLAGS & 0x10 == 0`); se um script deixa o bit 0x10 de `0x8010E0F4` ligado, `in_cutscene` fica 1 e a 1ª pessoa fica bloqueada.
+- **Correção:** `fps_can_activate` usa só as flags do jogo: `func_8009E1E0(1)` limpa o bit 0 de `STATE` e liga `CUTSCENE_CAM` (`0x8009E640`); `func_8009E1E0(3)` liga `CUTSCENE_FLAG` (`0x8009E740`); as duas são zeradas no modo 0 (`0x8009E128`, `0x8009E148`). `lm_player_end` só aplica a mira da 1ª pessoa quando `fps_can_activate` é verdadeiro (antes reescrevia `+0x64`/`+0x154`/`+0xF8` durante a cena).
+- **Diagnóstico:** com `log` ligado, apertar D-pad Cima quando a 1ª pessoa está bloqueada grava `coop: lad fps_blocked <jogador> <MODE> <STATE> <CUTSCENE_FLAG> <CUTSCENE_CAM> <ação> <menu aberto> <in_cutscene>`.
+
+### Passo 63e: `CUTSCENE_CAM` fica ligado depois da cena; 1ª pessoa tremendo no split screen
+
+- **Log do teste (Passo 63d):** depois da cutscene, todo D-pad Cima deu `fps_blocked 0 1 0101 0 1 0 0 0`: jogo normal (`STATE = 0x0101`), `CUTSCENE_FLAG = 0`, `in_cutscene = 0`, ação 0, mas **`CUTSCENE_CAM` (`0x8011F784`) = 1**. Ou seja, `CUTSCENE_CAM` não é zerado ao fim de toda cena e não serve para saber se há cena rodando.
+- **Correção:** `fps_can_activate` não olha mais `CUTSCENE_CAM`. A cena continua coberta por `STATE & 1` (modo 1), `CUTSCENE_FLAG` (modo 3) e `fps_suspend_for_cutscene()`.
+- **Tremedeira no multiplayer:** duas causas prováveis:
+  1. `fps_can_activate` exigia `MODE & 1`, mas no co-op o mod põe `MODE = 2` em partes do quadro (split screen). Nas chamadas com `MODE = 2`, a câmera e o desenho voltavam para 3ª pessoa e a vista pulava entre as duas. Agora aceita `MODE` 1 ou 2.
+  2. O `Eye` sai dos ombros calculados por `func_80069D44` (`0x8005A4BC`, dentro de `func_80059E5C`). No split screen a câmera de um jogador pode rodar antes do update dele, usando os ombros do quadro anterior, e os braços (desenhados com os ossos novos) tremiam em relação à vista. Agora `fps_write_cam` também roda no fim do update do jogador (`lm_player_end`), com os ossos já atualizados.

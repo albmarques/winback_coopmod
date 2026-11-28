@@ -392,6 +392,9 @@ static float fps_walk_amp[2];
 static int fps_cam_saved[2];
 static float fps_saved_cam[2][8];
 static unsigned int fps_cur_cam_obj;
+static unsigned int fps_cam_data[2];
+static int fps_cam_idx[2];
+static void fps_write_cam(unsigned int player, int k, unsigned int cam_data, int idx);
 static unsigned int fps_cur_ik_player;
 static unsigned int fps_hidden_player;
 static unsigned int fps_hidden_tbl;
@@ -411,8 +414,14 @@ static int fps_can_activate(unsigned int p, int k) {
     if (recomp_get_config_u32("first_person") != 0) return 0;
     // Only flags confirmed to be clear during normal gameplay (SCRIPT_FLAGS bit 0x10, +0x18CE, 0x8010EDE5 and
     // STATE bit 0x08 can stay set in normal play and disabled 1st-person entirely; see Passo 63c).
-    if (!(U8(MODE) & 1) || !(U16(STATE) & 1) || in_cutscene) return 0;
-    if (U8(CUTSCENE_FLAG) != 0 || U8(CUTSCENE_CAM) != 0) return 0;
+    // in_cutscene (mod bookkeeping) is NOT used here: after some cutscenes it stays set until SCRIPT_FLAGS bit 0x10
+    // clears, which kept 1st-person disabled after the scene (Passo 63d). The game's own flags cover the scene itself:
+    // func_8009E1E0(1) clears STATE bit 0 and sets CUTSCENE_CAM (0x8009E640); func_8009E1E0(3) sets CUTSCENE_FLAG (0x8009E740).
+    // MODE: 1 = one view, 2 = split screen (the co-op code sets 2 during parts of each frame); requiring bit 0
+    // turned 1st-person off on some calls in split screen and the view jumped between 1st and 3rd person (Passo 63e).
+    // CUTSCENE_CAM (0x8011F784) is not checked: the log showed it still 1 in normal play after a scene (Passo 63d).
+    if ((U8(MODE) & 3) == 0 || !(U16(STATE) & 1)) return 0;
+    if (U8(CUTSCENE_FLAG) != 0) return 0;
     if (lm_open[k] || S8(p + 0x176B) <= 0) return 0;
     unsigned short act = U16(p + 0x16EC);
     // Disallow during cover (6/7/8), vaults (9), doors (12/13), pickup (17), death (22), ladders (23), switch/mgun (25).
@@ -642,6 +651,12 @@ static void fps_player_input(unsigned int p, int k) {
     fps_du_prev[k] = du_now;
 
     if (!fps_can_activate(p, k)) {
+        if (du_pressed && recomp_get_config_u32("log") != 0) {
+            unsigned int v[8] = { (unsigned int)k, (unsigned int)U8(MODE), (unsigned int)U16(STATE),
+                                  (unsigned int)U8(CUTSCENE_FLAG), (unsigned int)U8(CUTSCENE_CAM),
+                                  (unsigned int)U16(p + 0x16EC), (unsigned int)lm_open[k], (unsigned int)in_cutscene };
+            lad_log("fps_blocked", v, 8);
+        }
         fps_move_x[k] = 0.0f;
         fps_move_y[k] = 0.0f;
         fps_walk_amp[k] = 0.0f;
@@ -890,7 +905,16 @@ RECOMP_HOOK_RETURN("func_80034DBC") void coop_fps_cam_end(void) {
     fps_saved_cam[k][6] = F32(cam_data + 0x2C);
     fps_saved_cam[k][7] = F32(cam_data + 0x30);
     fps_cam_saved[k] = 1;
+    fps_cam_data[k] = cam_data;
+    fps_cam_idx[k] = idx;
+    fps_write_cam(player, k, cam_data, idx);
+}
 
+// Writes the 1st-person Eye/LookAt for player k into cam_data and the renderer's per-view globals.
+// Called from coop_fps_cam_end (func_80034DBC) and again at the end of the player's update (func_80059E5C),
+// after func_80069D44 (0x8005A4BC) rebuilt the bones: in split screen the camera of a player can run
+// before that player's update, and an Eye taken from last frame's shoulders made the view shake (Passo 63e).
+static void fps_write_cam(unsigned int player, int k, unsigned int cam_data, int idx) {
     float yaw = fps_yaw[k];
     float pitch = fps_pitch[k];
     float sin_y = spawn_sin(yaw);
@@ -1058,8 +1082,13 @@ static void lm_player_end(void) {
     U16(BTN_NEW_P1 + (unsigned int)k * 2) = lm_saved_btn;
     U32(RAW_PADS + (unsigned int)k * 8) = lm_saved_raw0;
     U32(RAW_PADS + (unsigned int)k * 8 + 4) = lm_saved_raw1;
-    if (fps_held[k]) {
-        fps_apply_aim(k ? SLOT1_DATA : SLOT0_DATA, k);
+    if (fps_held[k] && fps_can_activate(k ? SLOT1_DATA : SLOT0_DATA, k)) {
+        unsigned int pl = k ? SLOT1_DATA : SLOT0_DATA;
+        fps_apply_aim(pl, k);
+        unsigned int cd = fps_cam_data[k];
+        if (fps_cam_saved[k] && cd >= 0x80000000u && cd < 0x80800000u && S16(cd + 0xEC) != 9) {
+            fps_write_cam(pl, k, cd, fps_cam_idx[k]);
+        }
     }
     lm_suppressed = -1;
 }
