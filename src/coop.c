@@ -397,13 +397,71 @@ static unsigned int fps_hidden_player;
 static unsigned int fps_hidden_tbl;
 static unsigned int fps_saved_bones[15];
 static unsigned char fps_saved_lod;
+static unsigned int fps_saved_f4;
 
 static float fps_norm_axis(int raw_v) {
-    float v = (float)raw_v * (1.0f / 70.0f);
-    if (v > -0.15f && v < 0.15f) return 0.0f;
+    float v = (float)raw_v * (1.0f / 60.0f);
+    if (v > -0.12f && v < 0.12f) return 0.0f;
     if (v > 1.0f) v = 1.0f;
     if (v < -1.0f) v = -1.0f;
     return v;
+}
+
+static int fps_can_activate(unsigned int p, int k) {
+    if (recomp_get_config_u32("first_person") != 0) return 0;
+    // Only flags confirmed to be clear during normal gameplay (SCRIPT_FLAGS bit 0x10, +0x18CE, 0x8010EDE5 and
+    // STATE bit 0x08 can stay set in normal play and disabled 1st-person entirely; see Passo 63c).
+    if (!(U8(MODE) & 1) || !(U16(STATE) & 1) || in_cutscene) return 0;
+    if (U8(CUTSCENE_FLAG) != 0 || U8(CUTSCENE_CAM) != 0) return 0;
+    if (lm_open[k] || S8(p + 0x176B) <= 0) return 0;
+    unsigned short act = U16(p + 0x16EC);
+    // Disallow during cover (6/7/8), vaults (9), doors (12/13), pickup (17), death (22), ladders (23), switch/mgun (25).
+    // Note: Actions 18..21 are damage hit-stagger states (NOT cutscenes); keeping 1st-person active during 18..21
+    // prevents the camera and player body from violently snapping between 1st-person and 3rd-person when hit!
+    if (act == 6 || act == 7 || act == 8 || act == 9 ||
+        act == 12 || act == 13 || act == 17 || act == 22 || act == 23 || act == 25) {
+        return 0;
+    }
+    return 1;
+}
+
+static void fps_suspend_for_cutscene(void) {
+    for (int k = 0; k < 2; k++) {
+        unsigned int p = k ? SLOT1_DATA : SLOT0_DATA;
+        fps_move_x[k] = 0.0f;
+        fps_move_y[k] = 0.0f;
+        fps_walk_amp[k] = 0.0f;
+        if (fps_cam_saved[k]) {
+            unsigned int cam_obj = U32(CAM_PTRS + (unsigned int)k * 4u);
+            if (cam_obj >= 0x80000000u && cam_obj < 0x80800000u) {
+                unsigned int cam_data = U32(cam_obj + 0x2C);
+                if (cam_data >= 0x80000000u && cam_data < 0x80800000u) {
+                    F32(cam_data + 0x00) = fps_saved_cam[k][0];
+                    F32(cam_data + 0x04) = fps_saved_cam[k][1];
+                    F32(cam_data + 0x08) = fps_saved_cam[k][2];
+                    F32(cam_data + 0x0C) = fps_saved_cam[k][3];
+                    F32(cam_data + 0x10) = fps_saved_cam[k][4];
+                    F32(cam_data + 0x28) = fps_saved_cam[k][5];
+                    F32(cam_data + 0x2C) = fps_saved_cam[k][6];
+                    F32(cam_data + 0x30) = fps_saved_cam[k][7];
+                }
+            }
+            fps_cam_saved[k] = 0;
+        }
+        if (fps_held[k]) {
+            F32(p + 0x0154) = 0.0f;
+            F32(p + 0x0158) = 0.0f;
+            U32(p + 0x00F8) &= ~0x0200u;
+            // In func_8009E1E0(3) (0x8009E8EC..0x8009E9A8), the game only resets player->0x16EC to 0 (Idle)
+            // if act < 2 (or 12, 13, 23, 25). If the player was in Action 3/4/5 (aiming/firing/reloading in 1st person),
+            // reset +0x16EC to 0 before func_8009E1E0 runs so the protagonist is not stuck aiming inside the cutscene!
+            unsigned short act = U16(p + 0x16EC);
+            if (act == 3 || act == 4 || act == 5) {
+                U16(p + 0x16EC) = 0;
+                U8(p + 0x16F0) = 1;
+            }
+        }
+    }
 }
 
 static void fps_apply_aim(unsigned int p, int k) {
@@ -420,21 +478,21 @@ static void fps_apply_aim(unsigned int p, int k) {
 }
 
 // func_80054178 is called at 0x8005370C inside func_800532CC right after the animation channels are sampled into
-// local-space root delta (+0x0F08..+0x0F10 / +0x0F68..+0x0F70), Pelvis (+0x0F14..+0x0F1C / +0x0F74..+0x0F7C),
-// Left Foot (+0x0F20..+0x0F28 / +0x0F80..+0x0F88), and Right Foot (+0x0F2C..+0x0F34 / +0x0F8C..+0x0F94).
-// Injecting the left-stick movement delta and procedural walk-cycle foot IK targets here lets func_80054178
-// rotate them by character yaw (+0x0064), run full wall/door/crate collision (func_8004127C) and floor/stair
-// tracking (func_80044DDC), and lets func_80069D44 solve 2-bone thigh/knee/calf/ankle IK (func_8006A508)
-// while the upper body stays in Action 3/4/5 (aiming/firing/reloading with the gun raised).
+// local-space root delta (+0x0F08..+0x0F10 / +0x0F68..+0x0F70).
+// Injecting the left-stick movement delta here lets func_80054178 rotate it by character yaw (+0x0064) and run
+// full wall/door/crate collision (func_8004127C) and floor/stair tracking (func_80044DDC).
+// Note: We keep the foot IK targets (+0x0F20..+0x0F34) at their clean ground positions during func_80054178 so
+// foot raycasts (0x80054C38 / 0x80054DDC) never block movement on stairs/trim, and then offset the floor-snapped
+// world-space foot IK targets in coop_fps_ik_end (func_80052600) right before func_80069D44 solves the 2-bone leg IK!
 RECOMP_HOOK("func_80054178") void coop_fps_move_begin(unsigned int player) {
     if (player != SLOT0_DATA && player != SLOT1_DATA) return;
     int k = (player == SLOT1_DATA) ? 1 : 0;
-    if (!fps_held[k]) return;
+    if (!fps_held[k] || !fps_can_activate(player, k)) return;
 
     fps_apply_aim(player, k);
 
     unsigned short act = U16(player + 0x16EC);
-    if (act != 3 && act != 4 && act != 5) return;
+    if (act > 5 && !(act >= 18 && act <= 20)) return;
 
     float mx = fps_move_x[k]; // positive = strafe right, negative = strafe left
     float my = fps_move_y[k]; // positive = walk forward, negative = walk backward
@@ -446,15 +504,20 @@ RECOMP_HOOK("func_80054178") void coop_fps_move_begin(unsigned int player) {
         mag = 1.0f;
     }
 
-    if (mag > 0.05f) {
+    if (mag > 0.05f && act <= 5) {
         fps_walk_dir_x[k] = -mx / mag; // local +X is character Left; stick right (mx > 0) moves along local -X
         fps_walk_dir_z[k] = my / mag;  // local +Z is character Forward; stick up (my > 0) moves along local +Z
-        fps_walk_amp[k] += (mag - fps_walk_amp[k]) * 0.25f;
-        fps_walk_phase[k] += 0.14f + 0.13f * mag;
+        fps_walk_amp[k] += (mag - fps_walk_amp[k]) * 0.30f;
+        fps_walk_phase[k] += 0.18f + 0.16f * mag;
         if (fps_walk_phase[k] > 6.2831853f) fps_walk_phase[k] -= 6.2831853f;
 
-        // Root motion velocity in character-local space (units per frame; 4.2f matches tactical aiming walk speed)
-        float speed = 4.2f;
+        // Clear bits 0x10 and 0x10000 in player + 0x00F4 so func_80054178 always takes the standard
+        // root-motion path (0x8005431C..0x80054400) instead of the slope/inertia branch (0x80054764 / 0x800542F4)
+        // which ignores +0x0F08/+0x0F10 and reads +0x0018/+0x0020 (0.0f), freezing movement on stairs/slopes!
+        U32(player + 0x00F4) &= ~0x00010010u;
+
+        // Root motion velocity in character-local space (units per frame; 7.8f gives a brisk, responsive tactical walk)
+        float speed = 7.8f;
         float dx_local = -mx * speed;
         float dz_local = my * speed;
         F32(player + 0x0F08) = dx_local;
@@ -465,75 +528,12 @@ RECOMP_HOOK("func_80054178") void coop_fps_move_begin(unsigned int player) {
         fps_walk_amp[k] *= 0.72f;
         if (fps_walk_amp[k] < 0.01f) fps_walk_amp[k] = 0.0f;
     }
-
-    float amp = fps_walk_amp[k];
-    if (amp > 0.01f) {
-        float ph = fps_walk_phase[k];
-        float s_l = spawn_sin(ph);                   // Left leg swing (-1 back .. +1 forward)
-        float c_l = spawn_sin(ph + 1.5707963f);      // Left leg lift (> 0 during forward swing)
-        float s_r = -s_l;                            // Right leg swing (opposite phase)
-        float c_r = -c_l;                            // Right leg lift (> 0 during forward swing)
-
-        float stride = 22.0f * amp;
-        float lift_l = (c_l > 0.0f) ? (c_l * c_l * 14.0f * amp) : 0.0f;
-        float lift_r = (c_r > 0.0f) ? (c_r * c_r * 14.0f * amp) : 0.0f;
-
-        float dir_x = fps_walk_dir_x[k];
-        float dir_z = fps_walk_dir_z[k];
-
-        // Center feet around a natural tactical walking stance under the hips (local X = +10 left / -10 right, Z = 0)
-        // so both legs step symmetrically instead of keeping the static wide-back aiming lunge of Action 3.
-        float base_lx = F32(player + 0x0F20);
-        float base_lz = F32(player + 0x0F28);
-        float base_rx = F32(player + 0x0F2C);
-        float base_rz = F32(player + 0x0F34);
-        float walk_lx = 10.5f + dir_x * (s_l * stride);
-        float walk_lz = 2.0f  + dir_z * (s_l * stride);
-        float walk_rx = -10.5f + dir_x * (s_r * stride);
-        float walk_rz = -2.0f + dir_z * (s_r * stride);
-        float blend = (amp * 1.4f > 1.0f) ? 1.0f : (amp * 1.4f);
-
-        float lx = base_lx + (walk_lx - base_lx) * blend;
-        float lz = base_lz + (walk_lz - base_lz) * blend;
-        float rx = base_rx + (walk_rx - base_rx) * blend;
-        float rz = base_rz + (walk_rz - base_rz) * blend;
-
-        // Pelvis vertical walk bob (2 cycles per stride) and subtle lateral weight shift toward the stance leg
-        float bob_2x = spawn_sin(ph * 2.0f - 0.785398f);
-        float pelvis_dy = -1.8f * amp + 1.8f * amp * bob_2x;
-        float pelvis_dx = -2.2f * amp * c_l;
-
-        // Primary channel (+0x0F14..+0x0F34) and secondary blend channel (+0x0F74..+0x0F94)
-        F32(player + 0x0F14) += pelvis_dx;
-        F32(player + 0x0F18) += pelvis_dy;
-        F32(player + 0x0F74) += pelvis_dx;
-        F32(player + 0x0F78) += pelvis_dy;
-
-        F32(player + 0x0F20) = lx;
-        F32(player + 0x0F24) += lift_l;
-        F32(player + 0x0F28) = lz;
-        F32(player + 0x0F80) = lx;
-        F32(player + 0x0F84) += lift_l;
-        F32(player + 0x0F88) = lz;
-
-        F32(player + 0x0F2C) = rx;
-        F32(player + 0x0F30) += lift_r;
-        F32(player + 0x0F34) = rz;
-        F32(player + 0x0F8C) = rx;
-        F32(player + 0x0F90) += lift_r;
-        F32(player + 0x0F94) = rz;
-
-        // Pelvis roll/yaw twist and ankle heel-to-toe pitch during stride
-        F32(player + 0x0D44) += 0.09f * s_l * amp;              // pelvis counter-yaw
-        F32(player + 0x0D48) += 0.05f * c_l * amp;              // pelvis hip roll
-        F32(player + 0x0D58) += (-0.28f * s_l * dir_z + 0.16f * c_l) * amp; // left ankle pitch
-        F32(player + 0x0D64) += (-0.28f * s_r * dir_z + 0.16f * c_r) * amp; // right ankle pitch
-    }
 }
 
-// func_80052600 is called at 0x80055FB0 inside func_80055F6C, immediately before 0x80055FC8 rotates the
-// Chest (+0x0F38), Head (+0x0F44), Left Hand (+0x0F50), and Right Hand (+0x0F5C) IK targets by +0x0064, +0x0158, +0x0154
-// and before func_80069D44 (0x8005A4BC) builds the 15 bone matrices.
+// func_80052600 is called at 0x80055FB0 inside func_80055F6C, after func_80054178 has finished all wall collision
+// and floor-height snapping on the player and world-space Pelvis (+0x0F14) / Feet (+0x0F20, +0x0F2C), and
+// immediately before 0x80055FC8 rotates the Chest (+0x0F38), Head (+0x0F44), Left Hand (+0x0F50), and Right Hand (+0x0F5C)
+// IK targets by +0x0064, +0x0158, +0x0154 and before func_80069D44 (0x8005A4BC) solves the 2-bone leg and arm IK.
 RECOMP_HOOK("func_80052600") void coop_fps_ik_begin(unsigned int player) {
     fps_cur_ik_player = (player == SLOT0_DATA || player == SLOT1_DATA) ? player : 0;
 }
@@ -543,13 +543,73 @@ RECOMP_HOOK_RETURN("func_80052600") void coop_fps_ik_end(void) {
     fps_cur_ik_player = 0;
     if (p == 0) return;
     int k = (p == SLOT1_DATA) ? 1 : 0;
-    if (fps_held[k]) {
+    if (fps_held[k] && fps_can_activate(p, k)) {
         fps_apply_aim(p, k);
-        // Subtle upper-body and weapon walk bob so the 3rd-person character and 1st-person viewmodel breathe while walking
         float amp = fps_walk_amp[k];
         if (amp > 0.01f) {
             float ph = fps_walk_phase[k];
-            float sway_x = 0.7f * amp * spawn_sin(ph);
+            float s_l = spawn_sin(ph);                   // Left leg swing (-1 back .. +1 forward)
+            float c_l = spawn_sin(ph + 1.5707963f);      // Left leg lift (> 0 during forward swing)
+            float s_r = -s_l;                            // Right leg swing (opposite phase)
+            float c_r = -c_l;                            // Right leg lift (> 0 during forward swing)
+
+            float stride = 24.0f * amp;
+            float lift_l = (c_l > 0.0f) ? (c_l * c_l * 16.0f * amp) : 0.0f;
+            float lift_r = (c_r > 0.0f) ? (c_r * c_r * 16.0f * amp) : 0.0f;
+
+            float yaw = fps_yaw[k];
+            float fwd_x = spawn_sin(yaw);
+            float fwd_z = spawn_sin(yaw + 1.5707963f);
+            float left_x = fwd_z;
+            float left_z = -fwd_x;
+
+            float dir_x = fps_walk_dir_x[k];
+            float dir_z = fps_walk_dir_z[k];
+            float px = F32(p + 0x0000);
+            float pz = F32(p + 0x0008);
+
+            // World-space foot IK targets centered under the hips (local X = +10.5 left / -10.5 right),
+            // preserving the floor-snapped Y (+0x0F24, +0x0F30) computed by func_80054178 and adding vertical step lift.
+            float walk_lx_local = 10.5f + dir_x * (s_l * stride);
+            float walk_lz_local = 2.0f  + dir_z * (s_l * stride);
+            float walk_rx_local = -10.5f + dir_x * (s_r * stride);
+            float walk_rz_local = -2.0f + dir_z * (s_r * stride);
+
+            float walk_lx = px + walk_lx_local * left_x + walk_lz_local * fwd_x;
+            float walk_lz = pz + walk_lx_local * left_z + walk_lz_local * fwd_z;
+            float walk_rx = px + walk_rx_local * left_x + walk_rz_local * fwd_x;
+            float walk_rz = pz + walk_rx_local * left_z + walk_rz_local * fwd_z;
+
+            float blend = (amp * 1.4f > 1.0f) ? 1.0f : (amp * 1.4f);
+            float base_lx = F32(p + 0x0F20);
+            float base_lz = F32(p + 0x0F28);
+            float base_rx = F32(p + 0x0F2C);
+            float base_rz = F32(p + 0x0F34);
+
+            F32(p + 0x0F20) = base_lx + (walk_lx - base_lx) * blend;
+            F32(p + 0x0F24) += lift_l;
+            F32(p + 0x0F28) = base_lz + (walk_lz - base_lz) * blend;
+
+            F32(p + 0x0F2C) = base_rx + (walk_rx - base_rx) * blend;
+            F32(p + 0x0F30) += lift_r;
+            F32(p + 0x0F34) = base_rz + (walk_rz - base_rz) * blend;
+
+            // World-space pelvis vertical walk bob (2 cycles per stride) and lateral weight shift
+            float bob_2x = spawn_sin(ph * 2.0f - 0.785398f);
+            float pelvis_dy = -1.8f * amp + 1.8f * amp * bob_2x;
+            float pelvis_dx = -2.2f * amp * c_l;
+            F32(p + 0x0F14) += pelvis_dx * left_x;
+            F32(p + 0x0F18) += pelvis_dy;
+            F32(p + 0x0F1C) += pelvis_dx * left_z;
+
+            // Pelvis roll/yaw twist and ankle heel-to-toe pitch during stride
+            F32(p + 0x0D44) += 0.09f * s_l * amp;              // pelvis counter-yaw
+            F32(p + 0x0D48) += 0.05f * c_l * amp;              // pelvis hip roll
+            F32(p + 0x0D58) += (-0.28f * s_l * dir_z + 0.16f * c_l) * amp; // left ankle pitch
+            F32(p + 0x0D64) += (-0.28f * s_r * dir_z + 0.16f * c_r) * amp; // right ankle pitch
+
+            // Subtle upper-body and weapon walk bob in local space (rotated right after func_80052600 returns)
+            float sway_x = 0.7f * amp * s_l;
             float bob_y  = 0.6f * amp * spawn_sin(ph * 2.0f);
             F32(p + 0x0F38) += sway_x;
             F32(p + 0x0F3C) += bob_y;
@@ -569,20 +629,6 @@ RECOMP_HOOK_RETURN("func_80052600") void coop_fps_ik_end(void) {
             F32(p + 0x0FC0) += bob_y * 0.6f;
         }
     }
-}
-
-static int fps_can_activate(unsigned int p, int k) {
-    if (recomp_get_config_u32("first_person") != 0) return 0;
-    if (!(U8(MODE) & 1) || !(U16(STATE) & 1) || in_cutscene) return 0;
-    if (U8(CUTSCENE_FLAG) != 0 || U8(CUTSCENE_CAM) != 0) return 0;
-    if (lm_open[k] || S8(p + 0x176B) <= 0) return 0;
-    unsigned short act = U16(p + 0x16EC);
-    // Disallow during cover (6/7/8), vaults (9), doors (12/13), pickup (17), cutscene (18), death (22), ladders (23), switch/mgun (25)
-    if (act == 6 || act == 7 || act == 8 || act == 9 || act == 12 || act == 13 ||
-        act == 17 || act == 18 || act == 22 || act == 23 || act == 25) {
-        return 0;
-    }
-    return 1;
 }
 
 static void fps_player_input(unsigned int p, int k) {
@@ -680,7 +726,7 @@ static void fps_player_input(unsigned int p, int k) {
     unsigned short new_btn = lm_saved_btn;
     unsigned short held_btn = (raw_btn & (unsigned short)~0x0800u) | 0x0010u;
     unsigned short raw_new = U16(raw + 6) & (unsigned short)~0x0800u;
-    if (U16(p + 0x16EC) < 2) {
+    if (U16(p + 0x16EC) <= 2) {
         new_btn |= 0x0010u;
         raw_new |= 0x0010u;
     }
@@ -695,7 +741,7 @@ static void fps_player_input(unsigned int p, int k) {
 // Viewmodel FPS: in the player's own viewport, hide the legs/pelvis, torso, head, and upper arms
 // (keeping only the forearms and hands: bones 11, 12, 14, 15 = idx 10, 11, 13, 14, where idx 14 carries the 3D weapon),
 // skip the full-body dynamic joint pass (LOD = 3), and in coop_fps_draw_end emit the dynamic elbow joints
-// (8triangles per elbow from D_801DC710 + slot * 0xBF0 + 0x0408 / + 0x0508, already skinned by func_8006E8B4)
+// (8 triangles per elbow from D_801DC710 + slot * 0xBF0 + 0x0408 / + 0x0508, already skinned by func_8006E8B4)
 // so the forearms connect smoothly without the open hollow boundary at the elbow!
 static void fps_copy_elbow_vtx(unsigned int src, unsigned int dst) {
     for (unsigned int i = 0; i < 16u; i++) {
@@ -704,9 +750,7 @@ static void fps_copy_elbow_vtx(unsigned int src, unsigned int dst) {
         U16(d + 0x00) = U16(s + 0x00); // x
         U16(d + 0x02) = U16(s + 0x02); // y
         U16(d + 0x04) = U16(s + 0x04); // z
-        U16(d + 0x06) = 0;             // flag
-        U16(d + 0x08) = 0;             // s
-        U16(d + 0x0A) = 0;             // t
+        // Preserve d + 0x06 (flag) and d + 0x08..0x0A (s, t texture coords loaded by func_8006B3B8), matching func_8006DBA4
         U8(d + 0x0C)  = U8(s + 0x08);  // nx
         U8(d + 0x0D)  = U8(s + 0x09);  // ny
         U8(d + 0x0E)  = U8(s + 0x0A);  // nz
@@ -715,6 +759,7 @@ static void fps_copy_elbow_vtx(unsigned int src, unsigned int dst) {
 }
 
 static void fps_emit_dynamic_elbows(unsigned int player) {
+    if ((U32(player + 0x00F4) & 0x20000100u) != 0) return;
     int slot = S8(player + 0x179B);
     if (slot < 0 || slot >= 16) return;
     unsigned int base = 0x801DC710u + (unsigned int)slot * 0x0BF0u;
@@ -726,7 +771,7 @@ static void fps_emit_dynamic_elbows(unsigned int player) {
     if (dl < 0x80000000u || dl >= 0x80800000u) return;
 
     // Set world identity matrix (0x80104528) and shaded primitive/texture state matching func_8006EF90 (0x80071588..0x80071834)
-    U32(dl + 0x00) = 0xDA380003u; U32(dl + 0x04) = 0x80104528u; // gSPMatrix(0x80104528, G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_PUSH)
+    U32(dl + 0x00) = 0xDA380003u; U32(dl + 0x04) = 0x80104528u; // gSPMatrix(0x80104528, G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH)
     U32(dl + 0x08) = 0xE7000000u; U32(dl + 0x0C) = 0x00000000u; // gDPPipeSync()
     // Right elbow (16 vertices at base + 0x0408, 8 triangles bridging upper arm and forearm)
     U32(dl + 0x10) = 0x01010020u; U32(dl + 0x14) = base + 0x0408u;
@@ -754,7 +799,7 @@ RECOMP_HOOK("func_80057100") void coop_fps_draw_begin(unsigned int obj) {
     unsigned int player = U32(obj + 0x2C);
     if (player != SLOT0_DATA && player != SLOT1_DATA) return;
     int k = (player == SLOT1_DATA) ? 1 : 0;
-    if (!fps_held[k]) return;
+    if (!fps_held[k] || !fps_can_activate(player, k)) return;
     int vp = drawing_split ? (U8(0x8016A40F) ? 1 : 0) : 0;
     unsigned int vp_player = U32(PLAYER_PTRS + (unsigned int)vp * 4u);
     if (player == vp_player) {
@@ -768,6 +813,10 @@ RECOMP_HOOK("func_80057100") void coop_fps_draw_begin(unsigned int obj) {
             }
             fps_saved_lod = U8(player + 0x1768);
             U8(player + 0x1768) = 3;
+            // Clear post-hit invincibility blink bit (0x20000000 in +0x00F4 toggled every 2 frames by 0x8005A778 while +0x174D > 0)
+            // in the player's own 1st-person viewport so the viewmodel arms and gun don't strobe on/off or skip segment setup in func_80057100.
+            fps_saved_f4 = U32(player + 0x00F4);
+            U32(player + 0x00F4) = fps_saved_f4 & ~0x20000000u;
         }
     }
 }
@@ -780,6 +829,7 @@ RECOMP_HOOK_RETURN("func_80057100") void coop_fps_draw_end(void) {
         fps_hidden_player = 0;
         fps_hidden_tbl = 0;
         fps_emit_dynamic_elbows(player);
+        U32(player + 0x00F4) = fps_saved_f4;
     }
 }
 
@@ -3481,7 +3531,9 @@ RECOMP_HOOK("func_800944E0") void coop_event_mgr_begin(void) {
     ladder_requeue_frame();
     unsigned int p1 = U32(PLAYER_PTRS);
     unsigned int p2 = U32(PLAYER_PTRS + 4);
-    if (p1 != 0 && p2 != 0 && U16(p1 + 0x16EC) < 2 && U16(p2 + 0x16EC) < 2) {
+    if (p1 != 0 && p2 != 0 &&
+        (U16(p1 + 0x16EC) < 2 || (fps_held[0] && U16(p1 + 0x16EC) == 3)) &&
+        (U16(p2 + 0x16EC) < 2 || (fps_held[1] && U16(p2 + 0x16EC) == 3))) {
         evt_saved_new_p1 = U16(BTN_NEW_P1);
         evt_saved_mask_p1 = U16(BTN_MASK_P1);
         U16(BTN_NEW_P1) |= U16(BTN_NEW_P2);
@@ -3571,6 +3623,9 @@ RECOMP_HOOK_RETURN("func_8009BE18") void coop_script_run_end(void) {
 RECOMP_HOOK("func_8009E1E0") void coop_cutscene_mode_begin(int mode) {
     e1e0_mode = mode;
     lad_event("e1e0", mode, 0);
+    if (mode == 1 || mode == 3) {
+        fps_suspend_for_cutscene();
+    }
     if (!coop_story_session()) {
         return;
     }
